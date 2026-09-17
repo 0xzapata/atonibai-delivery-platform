@@ -1,4 +1,4 @@
-import { Link, Route, Routes } from 'react-router';
+import { Link, Route, Routes, useRoutes } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import {
   apiGet,
@@ -7,6 +7,16 @@ import {
   type StoresPayload,
 } from './lib/api';
 import { PERSONAS, usePersona } from './lib/persona';
+import { buyerRoutes } from './pages/buyer/routes';
+import { storeRoutes } from './pages/store/routes';
+
+function BuyerSection() {
+  return useRoutes(buyerRoutes);
+}
+
+function StoreSection() {
+  return useRoutes(storeRoutes);
+}
 
 function ShellHeader() {
   return (
@@ -203,14 +213,8 @@ export default function App() {
       <main className="mx-auto w-full max-w-6xl px-4 py-6 sm:py-8">
         <Routes>
           <Route path="/" element={<HomePage />} />
-          <Route
-            path="/buyer"
-            element={<PlaceholderPage title="Buyer" blurb="Browse stores, cart, checkout and live tracking." />}
-          />
-          <Route
-            path="/store"
-            element={<PlaceholderPage title="Store Owner" blurb="Sales dashboard, order kanban and menu editor." />}
-          />
+          <Route path="/buyer/*" element={<BuyerSection />} />
+          <Route path="/store/*" element={<StoreSection />} />
           <Route
             path="/rider"
             element={<PlaceholderPage title="Rider" blurb="Offer queue, active delivery map and earnings." />}
