@@ -43,12 +43,18 @@ export async function fetchRoute(
   const url =
     `https://router.project-osrm.org/route/v1/driving/` +
     `${storeLng},${storeLat};${buyerLng},${buyerLat}?overview=full&geometries=geojson`;
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  const data = (await res.json()) as {
-    routes?: Array<{ geometry?: { coordinates?: Array<[number, number]> } }>;
-  };
-  const coords = data.routes?.[0]?.geometry?.coordinates;
-  if (!coords || coords.length === 0) return null;
-  return coords.map(([lng, lat]) => [lat, lng] as [number, number]);
+  // Issue #13 (partial): the demo server can hang — cap the wait so the UI
+  // falls back to a straight line instead of stalling the map.
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      routes?: Array<{ geometry?: { coordinates?: Array<[number, number]> } }>;
+    };
+    const coords = data.routes?.[0]?.geometry?.coordinates;
+    if (!coords || coords.length === 0) return null;
+    return coords.map(([lng, lat]) => [lat, lng] as [number, number]);
+  } catch {
+    return null;
+  }
 }

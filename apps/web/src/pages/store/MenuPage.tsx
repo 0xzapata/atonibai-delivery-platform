@@ -216,7 +216,7 @@ export default function MenuPage() {
             return (
               <section key={String(cat.id)} className="card p-4">
                 <h2 className="text-base font-extrabold">
-                  {cat.name ?? cat.title ?? 'Category'}{' '}
+                  {cat.name}{' '}
                   <span className="ml-1 rounded-full bg-stone-100 px-2 py-0.5 align-middle text-xs font-bold text-stone-500">
                     {items.length}
                   </span>

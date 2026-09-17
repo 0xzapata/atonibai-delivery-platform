@@ -1,5 +1,9 @@
-// KaonCDO store-owner UI — shared contract types (defensive: backend lands in parallel).
-// All shapes tolerate camelCase/snake_case variants and wrapped/unwrapped payloads.
+// KaonCDO store-owner UI — contract types mirroring the API (PLAN.md §4).
+//
+// Exact snake_case shapes: when the API stops sending a field the UI must
+// break loudly (error state / contract-check), never render a silent
+// fallback. scripts/contract-check.mjs asserts these shapes against a live
+// API; see issue #14 for why the old alias-soup normalizers were removed.
 
 export type OrderStatus =
   | 'placed'
@@ -14,154 +18,95 @@ export type OrderStatus =
   | (string & {});
 
 export interface OrderSummary {
-  id: string | number;
-  buyer_name?: string | null;
-  buyerName?: string | null;
-  buyer?: string | { name?: string | null } | null;
+  id: string;
+  buyer_id: string;
+  buyer_name: string | null;
+  buyer_email: string | null;
+  buyer_phone: string | null;
+  store_id: string;
+  store_name: string;
   status: OrderStatus;
-  total?: number | string | null;
-  grand_total?: number | string | null;
-  created_at?: string | null;
-  createdAt?: string | null;
-  items_count?: number | null;
-  itemsCount?: number | null;
-  item_count?: number | null;
-  store_id?: string | number | null;
-  storeId?: string | number | null;
-  store_name?: string | null;
+  subtotal: number;
+  delivery_fee: number;
+  service_fee: number;
+  discount: number;
+  total: number;
+  promo_code: string | null;
+  payment_method: string | null;
+  payment_status: string;
+  buyer_lat: number | null;
+  buyer_lng: number | null;
+  created_at: string;
+  items_count: number;
 }
 
-export type OrdersListPayload =
-  | { orders: OrderSummary[] }
-  | { data: OrderSummary[] }
-  | OrderSummary[];
+export type OrdersListPayload = { orders: OrderSummary[] };
 
+/** Buyer choice stored on order_items.options: {choiceId, name, price_delta}. */
 export interface OrderItemChoice {
+  choiceId?: string | null;
   name?: string | null;
-  option?: string | null;
-  choice?: string | null;
-  label?: string | null;
   price_delta?: number | string | null;
-  price?: number | string | null;
 }
 
 export interface OrderDetailItem {
-  id?: string | number | null;
-  name?: string | null;
-  title?: string | null;
-  menu_item_name?: string | null;
-  qty?: number | null;
-  quantity?: number | null;
-  count?: number | null;
-  price?: number | string | null;
-  unit_price?: number | string | null;
-  line_total?: number | string | null;
-  total?: number | string | null;
-  notes?: string | null;
-  options?: Array<string | OrderItemChoice> | null;
-  choices?: Array<string | OrderItemChoice> | null;
-  modifiers?: Array<string | OrderItemChoice> | null;
+  id: string;
+  order_id: string;
+  item_id: string | null;
+  name: string;
+  unit_price: number;
+  qty: number;
+  options: Array<string | OrderItemChoice>;
+  line_total: number;
 }
 
 export interface OrderTimelineEntry {
-  status?: string | null;
-  label?: string | null;
-  event?: string | null;
-  at?: string | null;
-  created_at?: string | null;
-  createdAt?: string | null;
-  timestamp?: string | null;
+  at: string;
+  status: string;
+  note?: string | null;
 }
 
 export interface OrderPayment {
-  method?: string | null;
-  provider?: string | null;
-  status?: string | null;
-  state?: string | null;
-}
-
-export interface OrderReview {
-  id?: string | number | null;
-  rating?: number | null;
-  stars?: number | null;
-  comment?: string | null;
-  body?: string | null;
-  text?: string | null;
-  created_at?: string | null;
-  author?: string | null;
-  buyer_name?: string | null;
+  id: string;
+  order_id: string;
+  method: string;
+  amount: number;
+  status: string;
+  ref_code: string | null;
 }
 
 export interface OrderDetail extends OrderSummary {
-  items?: OrderDetailItem[] | null;
-  order_items?: OrderDetailItem[] | null;
-  orderItems?: OrderDetailItem[] | null;
-  lines?: OrderDetailItem[] | null;
-  buyer_email?: string | null;
-  buyer_phone?: string | null;
-  buyer_address?: string | null;
-  address?: string | null;
-  payment?: OrderPayment | string | null;
-  payment_method?: string | null;
-  paymentMethod?: string | null;
-  payment_status?: string | null;
-  subtotal?: number | string | null;
-  delivery_fee?: number | string | null;
-  deliveryFee?: number | string | null;
-  service_fee?: number | string | null;
-  discount?: number | string | null;
-  timeline?: OrderTimelineEntry[] | null;
-  events?: OrderTimelineEntry[] | null;
-  history?: OrderTimelineEntry[] | null;
-  reviews?: OrderReview[] | null;
-  cancel_reason?: string | null;
-  reject_reason?: string | null;
-  notes?: string | null;
+  timeline: OrderTimelineEntry[];
+  items: OrderDetailItem[];
+  payment: OrderPayment | null;
 }
 
-export type OrderDetailPayload =
-  | { order: OrderDetail }
-  | { data: OrderDetail }
-  | OrderDetail;
+export type OrderDetailPayload = { order: OrderDetail };
 
 export interface MenuItem {
-  id: string | number;
+  id: string;
   name: string;
-  description?: string | null;
-  price: number | string;
-  is_available?: boolean | null;
-  isAvailable?: boolean | null;
-  available?: boolean | null;
-  image?: string | null;
-  category_id?: string | number | null;
+  description: string | null;
+  price: number;
+  is_available: boolean;
+  image: string | null;
+  category_id: string | null;
 }
 
 export interface MenuCategory {
-  id: string | number;
+  id: string;
   name: string;
-  title?: string | null;
-  items?: MenuItem[] | null;
-  menu_items?: MenuItem[] | null;
-  menuItems?: MenuItem[] | null;
+  items: MenuItem[];
 }
 
-export type MenuPayload =
-  | { categories: MenuCategory[] }
-  | { menu: MenuCategory[] }
-  | { data: MenuCategory[] }
-  | MenuCategory[];
+export type MenuPayload = { categories: MenuCategory[] };
 
 export interface StoreStats {
-  todayRevenue?: number | string | null;
-  today_revenue?: number | string | null;
-  revenueToday?: number | string | null;
-  revenue_today?: number | string | null;
-  activeCount?: number | null;
-  active_count?: number | null;
-  activeOrders?: number | null;
-  deliveredToday?: number | null;
-  delivered_today?: number | null;
-  delivered?: number | null;
+  ownerId: string;
+  store_count: number;
+  revenue_today: number;
+  active_count: number;
+  delivered_today: number;
 }
 
 export type RejectReason = 'out_of_stock' | 'too_busy' | 'closed';
