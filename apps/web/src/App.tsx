@@ -13,6 +13,26 @@ import { riderRoutes } from './pages/rider/routes';
 import { opsRoutes } from './pages/ops/routes';
 import { supportRoutes } from './pages/support/routes';
 
+function BuyerSection() {
+  return useRoutes(buyerRoutes);
+}
+
+function StoreSection() {
+  return useRoutes(storeRoutes);
+}
+
+function RiderSection() {
+  return useRoutes(riderRoutes);
+}
+
+function OpsSection() {
+  return useRoutes(opsRoutes);
+}
+
+function SupportSection() {
+  return useRoutes(supportRoutes);
+}
+
 function ShellHeader() {
   return (
     <header className="glass sticky top-0 z-10 border-b border-stone-200">
@@ -181,22 +201,17 @@ function NotFoundPage() {
 }
 
 export default function App() {
-  const buyer = useRoutes(buyerRoutes);
-  const store = useRoutes(storeRoutes);
-  const rider = useRoutes(riderRoutes);
-  const ops = useRoutes(opsRoutes);
-  const support = useRoutes(supportRoutes);
   return (
     <div className="min-h-screen">
       <ShellHeader />
       <main className="mx-auto w-full max-w-6xl px-4 py-6 sm:py-8">
         <Routes>
           <Route path="/" element={<HomePage />} />
-          <Route path="/buyer/*" element={buyer} />
-          <Route path="/store/*" element={store} />
-          <Route path="/rider/*" element={rider} />
-          <Route path="/ops/*" element={ops} />
-          <Route path="/support/*" element={support} />
+          <Route path="/buyer/*" element={<BuyerSection />} />
+          <Route path="/store/*" element={<StoreSection />} />
+          <Route path="/rider/*" element={<RiderSection />} />
+          <Route path="/ops/*" element={<OpsSection />} />
+          <Route path="/support/*" element={<SupportSection />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </main>
