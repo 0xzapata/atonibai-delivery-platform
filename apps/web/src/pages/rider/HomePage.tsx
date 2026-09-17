@@ -44,6 +44,12 @@ const STATUS_STYLES: Record<RiderStatus, string> = {
   offline: 'bg-stone-400',
 };
 
+const VALID_PRESENCE: Record<string, RiderStatus> = {
+  online: 'online',
+  busy: 'busy',
+  offline: 'offline',
+};
+
 function PresenceToggle({
   status,
   pending,
@@ -82,22 +88,29 @@ function OfferCard({ offer, now }: { offer: RiderOffer; now: number }) {
   const navigate = useNavigate();
   const [busy, setBusy] = useState<'accept' | 'decline' | null>(null);
 
+  async function doAccept() {
+    await acceptOffer(offer.id);
+    toast(`Order ${shortId(offer.order_id)} accepted — head to pickup`, 'ok');
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: OFFERS_KEY }),
+      queryClient.invalidateQueries({ queryKey: ACTIVE_KEY }),
+    ]);
+    navigate('active');
+  }
+
+  async function doDecline() {
+    await declineOffer(offer.id);
+    toast('Offer declined', 'info');
+    await queryClient.invalidateQueries({ queryKey: OFFERS_KEY });
+  }
+
+  // Offer verb → action. Replaces accept/decline if-else with a table.
+  const OFFER_ACTION = { accept: doAccept, decline: doDecline } as const;
+
   async function act(kind: 'accept' | 'decline') {
     setBusy(kind);
     try {
-      if (kind === 'accept') {
-        await acceptOffer(offer.id);
-        toast(`Order ${shortId(offer.order_id)} accepted — head to pickup`, 'ok');
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: OFFERS_KEY }),
-          queryClient.invalidateQueries({ queryKey: ACTIVE_KEY }),
-        ]);
-        navigate('active');
-      } else {
-        await declineOffer(offer.id);
-        toast('Offer declined', 'info');
-        await queryClient.invalidateQueries({ queryKey: OFFERS_KEY });
-      }
+      await OFFER_ACTION[kind]();
     } catch (e) {
       toast(e instanceof Error ? e.message : `Failed to ${kind} offer`, 'err');
     } finally {
@@ -142,6 +155,51 @@ function OfferCard({ offer, now }: { offer: RiderOffer; now: number }) {
   );
 }
 
+// Single place for offer loading/error/empty/list. Replaces scattered blocks.
+function OfferList({
+  isPending,
+  isError,
+  offers,
+  now,
+}: {
+  isPending: boolean;
+  isError: boolean;
+  offers: RiderOffer[] | undefined;
+  now: number;
+}) {
+  if (isPending) {
+    return <div className="card animate-pulse p-6 text-sm text-stone-500">Loading offers…</div>;
+  }
+  if (isError) {
+    return (
+      <div className="card p-4 text-sm">
+        <p className="font-extrabold">Offers unavailable</p>
+        <p className="mt-1 text-xs text-stone-500">
+          Expected <code>GET /api/rider/offers?riderEmail=</code>. Check the API at
+          localhost:3001 and retry.
+        </p>
+      </div>
+    );
+  }
+  if (offers && offers.length === 0) {
+    return (
+      <div className="card p-6 text-center">
+        <p className="text-sm font-extrabold">No offers right now</p>
+        <p className="mt-1 text-xs text-stone-500">
+          Stay online — new offers appear here automatically every 5s.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <>
+      {(offers ?? []).map((offer) => (
+        <OfferCard key={offer.id} offer={offer} now={now} />
+      ))}
+    </>
+  );
+}
+
 export default function HomePage() {
   const now = useNow();
   const queryClient = useQueryClient();
@@ -166,8 +224,8 @@ export default function HomePage() {
     mutationFn: postPresence,
     onSuccess: (rider) => {
       if (rider) {
-        const s = rider.status.trim().toLowerCase();
-        if (s === 'online' || s === 'busy' || s === 'offline') setPresence(s);
+        const next = VALID_PRESENCE[rider.status.trim().toLowerCase()];
+        if (next) setPresence(next);
         setRiderName(rider.name);
       }
     },
@@ -188,7 +246,6 @@ export default function HomePage() {
     });
   }
 
-  const offers = offersQuery.data ?? [];
   const active = activeQuery.data ?? null;
 
   return (
@@ -262,29 +319,12 @@ export default function HomePage() {
           </button>
         </div>
 
-        {offersQuery.isPending && (
-          <div className="card animate-pulse p-6 text-sm text-stone-500">Loading offers…</div>
-        )}
-        {offersQuery.isError && (
-          <div className="card p-4 text-sm">
-            <p className="font-extrabold">Offers unavailable</p>
-            <p className="mt-1 text-xs text-stone-500">
-              Expected <code>GET /api/rider/offers?riderEmail=</code>. Check the API at
-              localhost:3001 and retry.
-            </p>
-          </div>
-        )}
-        {offersQuery.data && offers.length === 0 && (
-          <div className="card p-6 text-center">
-            <p className="text-sm font-extrabold">No offers right now</p>
-            <p className="mt-1 text-xs text-stone-500">
-              Stay online — new offers appear here automatically every 5s.
-            </p>
-          </div>
-        )}
-        {offers.map((offer) => (
-          <OfferCard key={offer.id} offer={offer} now={now} />
-        ))}
+        <OfferList
+          isPending={offersQuery.isPending}
+          isError={offersQuery.isError}
+          offers={offersQuery.data}
+          now={now}
+        />
       </section>
     </div>
   );
