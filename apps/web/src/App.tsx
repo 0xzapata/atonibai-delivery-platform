@@ -9,6 +9,9 @@ import {
 import { PERSONAS, usePersona } from './lib/persona';
 import { buyerRoutes } from './pages/buyer/routes';
 import { storeRoutes } from './pages/store/routes';
+import { riderRoutes } from './pages/rider/routes';
+import { opsRoutes } from './pages/ops/routes';
+import { supportRoutes } from './pages/support/routes';
 
 function BuyerSection() {
   return useRoutes(buyerRoutes);
@@ -16,6 +19,18 @@ function BuyerSection() {
 
 function StoreSection() {
   return useRoutes(storeRoutes);
+}
+
+function RiderSection() {
+  return useRoutes(riderRoutes);
+}
+
+function OpsSection() {
+  return useRoutes(opsRoutes);
+}
+
+function SupportSection() {
+  return useRoutes(supportRoutes);
 }
 
 function ShellHeader() {
@@ -169,28 +184,6 @@ function HomePage() {
   );
 }
 
-function PlaceholderPage({ title, blurb }: { title: string; blurb: string }) {
-  return (
-    <div className="card mx-auto max-w-xl p-8 text-center">
-      <p className="text-xs font-bold tracking-widest uppercase" style={{ color: 'var(--accent)' }}>
-        KaonCDO
-      </p>
-      <h1 className="mt-2 text-2xl font-extrabold">{title}</h1>
-      <p className="mt-2 text-sm text-stone-500">{blurb}</p>
-      <p className="mt-4 rounded-2xl bg-stone-100 px-4 py-3 text-sm font-semibold">
-        Coming in next task
-      </p>
-      <Link
-        to="/"
-        className="mt-4 inline-block rounded-full px-4 py-2 text-sm font-bold text-white"
-        style={{ backgroundColor: 'var(--accent)' }}
-      >
-        ← Back home
-      </Link>
-    </div>
-  );
-}
-
 function NotFoundPage() {
   return (
     <div className="card mx-auto max-w-xl p-8 text-center">
@@ -215,18 +208,12 @@ export default function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/buyer/*" element={<BuyerSection />} />
           <Route path="/store/*" element={<StoreSection />} />
-          <Route
-            path="/rider"
-            element={<PlaceholderPage title="Rider" blurb="Offer queue, active delivery map and earnings." />}
-          />
-          <Route
-            path="/ops"
-            element={<PlaceholderPage title="Fleet Operator" blurb="Live city map, orders table and promos." />}
-          />
-          <Route
-            path="/support"
-            element={<PlaceholderPage title="Support Agent" blurb="Ticket queue, threads and order actions." />}
-          />
+          <Route path="/rider/*" element={<RiderSection />} />
+          <Route path="/ops/*" element={<OpsSection />} />
+          <Route path="/support/*" element={<SupportSection />} />
+          <Route path="/rider/*" element={<RiderSection />} />
+          <Route path="/ops/*" element={<OpsSection />} />
+          <Route path="/support/*" element={<SupportSection />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </main>

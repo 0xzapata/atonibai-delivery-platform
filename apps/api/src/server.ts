@@ -942,7 +942,7 @@ app.get('/api/rider/active', async (req, reply) => {
 // ---------------------------------------------------------------------------
 
 app.get('/api/ops/live', async (req, reply) => {
-  if (!requirePersona(req, reply, ['operator'])) return;
+  if (!requirePersona(req, reply, ['operator', 'support'])) return;
   const riders = await pool.query(
     `SELECT u.id, u.name, rp.status, rp.vehicle,
             ST_Y(rp.last_location::geometry) AS lat, ST_X(rp.last_location::geometry) AS lng,
