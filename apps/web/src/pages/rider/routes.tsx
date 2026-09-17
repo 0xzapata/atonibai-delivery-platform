@@ -1,5 +1,4 @@
 // Rider routes (mounted by the orchestrator under `/rider`).
-// Keeps App.tsx untouched: just spreads `riderRoutes` as children of `/rider`.
 import 'leaflet/dist/leaflet.css';
 import { useEffect } from 'react';
 import { Outlet } from 'react-router';
@@ -17,7 +16,6 @@ function RiderLayout() {
       // Storage unavailable — api() already forces `x-persona: rider` anyway.
     }
   }, []);
-
   return (
     <div>
       <Outlet />
