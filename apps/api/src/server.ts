@@ -21,7 +21,11 @@ declare module 'fastify' {
 }
 
 const app = Fastify({ logger: true });
-await app.register(cors, { origin: true });
+// POC allowlist: demo clients run on localhost. Refuse any other browser
+// origin production-side (see issue #13); same-origin dev-proxy traffic is
+// unaffected. Socket.IO registration below uses the same list.
+const ALLOWED_ORIGINS = [/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/];
+await app.register(cors, { origin: ALLOWED_ORIGINS });
 
 // Same default JSON behavior, but an empty body with `Content-Type: application/json`
 // is treated as "no body" instead of a 400 (some HTTP clients send the header always).
@@ -109,20 +113,19 @@ async function setOrderStatus(orderId: string, status: string, note?: string): P
   await appendTimeline(orderId, status, note);
 }
 
-// --- socket emits (global + rooms so both join-order and ops listeners work) ---
+// --- socket emits (rooms ONLY — never io.emit globally, which would leak
+// every order's live GPS + tickets to all connected clients; see issue #2) ---
 function emitOrderUpdated(orderId: string, status: string): void {
   if (!io) return;
   const payload = { orderId, status };
   io.to(`order:${orderId}`).emit('order.updated', payload);
   io.to('city.ops').emit('order.updated', payload);
-  io.emit('order.updated', payload);
 }
 
 function emitOfferCreated(offer: unknown, orderId: string): void {
   if (!io) return;
   io.to(`order:${orderId}`).emit('offer.created', offer);
   io.to('city.ops').emit('offer.created', offer);
-  io.emit('offer.created', offer);
 }
 
 function emitTrackingPoint(orderId: string, lat: number, lng: number, heading: number | null): void {
@@ -130,12 +133,11 @@ function emitTrackingPoint(orderId: string, lat: number, lng: number, heading: n
   const payload = { orderId, lat, lng, heading };
   io.to(`order:${orderId}`).emit('tracking.point', payload);
   io.to('city.ops').emit('tracking.point', payload);
-  io.emit('tracking.point', payload);
 }
 
 function emitTicketUpdated(ticket: unknown): void {
   if (!io) return;
-  io.emit('ticket.updated', ticket);
+  // No per-ticket room exists; staff listeners join city.ops. Never global.
   io.to('city.ops').emit('ticket.updated', ticket);
 }
 
@@ -143,7 +145,6 @@ function emitOpsBroadcast(message: string): void {
   if (!io) return;
   const payload = { message, at: new Date().toISOString() };
   io.to('city.ops').emit('ops.broadcast', payload);
-  io.emit('ops.broadcast', payload);
 }
 
 // --- redis: lazy / best-effort only -------------------------------------------
@@ -191,6 +192,14 @@ const DISPATCHABLE = ['placed', 'store_accepted', 'preparing', 'ready'];
 
 async function dispatchOrder(orderId: string): Promise<void> {
   try {
+    // #12 (partial): retire time-expired 'offered' rows up front. In-memory
+    // expiry timers die with the process; without this the rows linger.
+    await pool.query(
+      `UPDATE offers SET status = 'expired'
+       WHERE order_id = $1 AND status = 'offered'
+         AND expires_at IS NOT NULL AND expires_at <= now()`,
+      [orderId],
+    );
     const o = await pool.query('SELECT id, store_id, status FROM orders WHERE id = $1', [orderId]);
     if (o.rowCount === 0) return;
     const order = o.rows[0] as { id: string; store_id: string; status: string };
@@ -257,8 +266,71 @@ async function latestAcceptedRider(orderId: string): Promise<{ id: string; name:
   return r.rows[0] as { id: string; name: string };
 }
 
+// #5: on cancel / store-reject / support-refund, expire the order's live offers
+// and flip the assigned rider (if any) back to 'online' so dispatch can reuse them.
+async function releaseOrderAssignment(orderId: string): Promise<void> {
+  const acc = await pool.query("SELECT rider_id FROM offers WHERE order_id = $1 AND status = 'accepted'", [
+    orderId,
+  ]);
+  await pool.query(
+    "UPDATE offers SET status = 'expired' WHERE order_id = $1 AND status IN ('offered', 'accepted')",
+    [orderId],
+  );
+  for (const row of acc.rows as Array<{ rider_id: string }>) {
+    await pool.query(
+      "UPDATE rider_profiles SET status = 'online', updated_at = now() WHERE user_id = $1 AND status = 'busy'",
+      [row.rider_id],
+    );
+  }
+}
+
+// #7: re-sweep unassigned DISPATCHABLE orders when a rider comes online (debounced).
+let presenceSweepTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function sweepUnassignedDispatchable(): Promise<void> {
+  try {
+    // #12: expiry is a DB timestamp, not process memory — a crash may leave
+    // 'offered' rows past expires_at, so expire them here before redispatch.
+    await pool.query(
+      `UPDATE offers SET status = 'expired'
+       WHERE status = 'offered' AND expires_at IS NOT NULL AND expires_at <= now()`,
+    );
+    const r = await pool.query(
+      `SELECT id FROM orders WHERE status = ANY($1)
+       AND NOT EXISTS (
+         SELECT 1 FROM offers
+         WHERE offers.order_id = orders.id
+           AND (offers.status = 'accepted'
+             OR (offers.status = 'offered'
+               AND (offers.expires_at IS NULL OR offers.expires_at > now())))
+       )
+       ORDER BY created_at ASC LIMIT 20`,
+      [DISPATCHABLE],
+    );
+    for (const row of r.rows as Array<{ id: string }>) {
+      await dispatchOrder(row.id);
+    }
+  } catch (e) {
+    app.log.error({ err: e }, 'presence sweep failed');
+  }
+}
+
+function schedulePresenceSweep(): void {
+  if (presenceSweepTimer) return; // debounce: collapse rapid presence flaps into one sweep
+  presenceSweepTimer = setTimeout(() => {
+    presenceSweepTimer = null;
+    void sweepUnassignedDispatchable();
+  }, 2000);
+}
+
 async function getOrderFull(orderId: string): Promise<Record<string, unknown> | null> {
-  const o = await pool.query('SELECT * FROM orders WHERE id = $1', [orderId]);
+  // #14: store UI renders buyer name/contact + item counts — join them here
+  // instead of letting client normalizers silently fall back to placeholders.
+  const o = await pool.query(
+    `SELECT o.*, u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
+     FROM orders o LEFT JOIN users u ON u.id = o.buyer_id WHERE o.id = $1`,
+    [orderId],
+  );
   if (o.rowCount === 0) return null;
   const order = o.rows[0] as Record<string, unknown>;
   const [items, store, payment, offer, tracking] = await Promise.all([
@@ -292,19 +364,33 @@ async function getOrderFull(orderId: string): Promise<Record<string, unknown> | 
   };
 }
 
-async function resolveOwnerStoreIds(ownerEmail?: string): Promise<{ ownerId: string; storeIds: string[] }> {
+async function resolveOwnerStoreIds(
+  ownerEmail?: string,
+): Promise<{ ownerId: string; storeIds: string[] } | null> {
   let owner: { id: string } | undefined;
   if (ownerEmail) {
     const r = await pool.query("SELECT id FROM users WHERE email = $1 AND role = 'store_owner'", [ownerEmail]);
     if ((r.rowCount ?? 0) > 0) owner = r.rows[0] as { id: string };
   }
-  if (!owner) {
-    const r = await pool.query("SELECT id FROM users WHERE role = 'store_owner' ORDER BY created_at ASC LIMIT 1");
-    if ((r.rowCount ?? 0) === 0) throw new Error('no store owners seeded');
-    owner = r.rows[0] as { id: string };
-  }
+  // Fail CLOSED (issue #9): an unknown/missing owner must never inherit the
+  // first owner's stores. Callers reply 403 on null.
+  if (!owner) return null;
   const s = await pool.query('SELECT id FROM stores WHERE owner_id = $1', [owner.id]);
   return { ownerId: owner.id, storeIds: s.rows.map((x: { id: string }) => x.id) };
+}
+
+/** Owner-scoped routes: 403 when the stub identity resolves to nobody. */
+async function requireOwnerStoreIds(
+  req: FastifyRequest,
+  reply: FastifyReply,
+): Promise<{ ownerId: string; storeIds: string[] } | null> {
+  const q = req.query as { ownerEmail?: string };
+  const resolved = await resolveOwnerStoreIds(q.ownerEmail);
+  if (!resolved) {
+    reply.code(403).send({ error: 'owner_not_found' });
+    return null;
+  }
+  return resolved;
 }
 
 // ---------------------------------------------------------------------------
@@ -507,41 +593,57 @@ app.post('/api/orders', async (req, reply) => {
   const pin = String(Math.floor(1000 + Math.random() * 9000));
   const nowIso = new Date().toISOString();
 
-  const oR = await pool.query(
-    `INSERT INTO orders (buyer_id, store_id, status, subtotal, delivery_fee, service_fee, discount, total,
-       promo_code, payment_method, payment_status, pickup_pin, buyer_lat, buyer_lng, timeline)
-     VALUES ($1,$2,'placed',$3,$4,$5,$6,$7,$8,$9,'paid',$10,$11,$12,$13::jsonb) RETURNING *`,
-    [
-      buyerId,
-      input.storeId,
-      subtotal,
-      deliveryFee,
-      serviceFee,
-      discount,
-      total,
-      promoCode,
-      input.paymentMethod,
-      pin,
-      input.buyerLat,
-      input.buyerLng,
-      JSON.stringify([{ at: nowIso, status: 'placed' }]),
-    ],
-  );
-  const order = oR.rows[0] as { id: string };
-  for (const ln of lines) {
-    await pool.query(
-      `INSERT INTO order_items (order_id, item_id, name, unit_price, qty, options, line_total)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [order.id, ln.itemId, ln.name, ln.unitPrice, ln.qty, JSON.stringify(ln.options), ln.lineTotal],
+  // #6: order + items + payment must land atomically — single transaction.
+  const client = await pool.connect();
+  let order: { id: string };
+  try {
+    await client.query('BEGIN');
+    const oR = await client.query(
+      `INSERT INTO orders (buyer_id, store_id, status, subtotal, delivery_fee, service_fee, discount, total,
+         promo_code, payment_method, payment_status, pickup_pin, buyer_lat, buyer_lng, timeline)
+       VALUES ($1,$2,'placed',$3,$4,$5,$6,$7,$8,$9,'paid',$10,$11,$12,$13::jsonb) RETURNING *`,
+      [
+        buyerId,
+        input.storeId,
+        subtotal,
+        deliveryFee,
+        serviceFee,
+        discount,
+        total,
+        promoCode,
+        input.paymentMethod,
+        pin,
+        input.buyerLat,
+        input.buyerLng,
+        JSON.stringify([{ at: nowIso, status: 'placed' }]),
+      ],
     );
+    order = oR.rows[0] as { id: string };
+    for (const ln of lines) {
+      await client.query(
+        `INSERT INTO order_items (order_id, item_id, name, unit_price, qty, options, line_total)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [order.id, ln.itemId, ln.name, ln.unitPrice, ln.qty, JSON.stringify(ln.options), ln.lineTotal],
+      );
+    }
+    const ref = `MOCK-${Date.now().toString(36).toUpperCase()}`;
+    await client.query(`INSERT INTO payments (order_id, method, amount, status, ref_code) VALUES ($1,$2,$3,'succeeded',$4)`, [
+      order.id,
+      input.paymentMethod,
+      total,
+      ref,
+    ]);
+    await client.query('COMMIT');
+  } catch (e) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      /* already failed; report the original error */
+    }
+    throw e;
+  } finally {
+    client.release();
   }
-  const ref = `MOCK-${Date.now().toString(36).toUpperCase()}`;
-  await pool.query(`INSERT INTO payments (order_id, method, amount, status, ref_code) VALUES ($1,$2,$3,'succeeded',$4)`, [
-    order.id,
-    input.paymentMethod,
-    total,
-    ref,
-  ]);
 
   if (idemKey) idempotency.set(idemKey, order.id);
   emitOrderUpdated(order.id, 'placed');
@@ -552,6 +654,7 @@ app.post('/api/orders', async (req, reply) => {
 });
 
 app.get<{ Params: { id: string } }>('/api/orders/:id', async (req, reply) => {
+  if (!req.persona) return reply.code(403).send({ error: 'persona_required' });
   if (!uuidParam.safeParse(req.params.id).success) return badId(reply, 'order id');
   const full = await getOrderFull(req.params.id);
   if (!full) return reply.code(404).send({ error: 'order_not_found' });
@@ -568,6 +671,7 @@ app.post<{ Params: { id: string } }>('/api/orders/:id/cancel', async (req, reply
   await setOrderStatus(req.params.id, 'cancelled', 'cancelled by buyer');
   await pool.query("UPDATE orders SET payment_status = 'refunded' WHERE id = $1", [req.params.id]);
   await pool.query("UPDATE payments SET status = 'refunded' WHERE order_id = $1", [req.params.id]);
+  await releaseOrderAssignment(req.params.id); // #5: free rider + expire live offers
   emitOrderUpdated(req.params.id, 'cancelled');
   return { order: await getOrderFull(req.params.id) };
 });
@@ -604,12 +708,22 @@ const reviewSchema = z.object({
 });
 
 app.post<{ Params: { id: string } }>('/api/orders/:id/review', async (req, reply) => {
+  if (!requirePersona(req, reply, ['buyer'])) return;
   if (!uuidParam.safeParse(req.params.id).success) return badId(reply, 'order id');
   const parsed = reviewSchema.safeParse(req.body);
   if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', issues: parsed.error.issues });
-  const r = await pool.query('SELECT id, buyer_id, store_id FROM orders WHERE id = $1', [req.params.id]);
+  const r = await pool.query('SELECT id, buyer_id, store_id, status FROM orders WHERE id = $1', [req.params.id]);
   if (r.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
-  const order = r.rows[0] as { id: string; buyer_id: string; store_id: string };
+  const order = r.rows[0] as { id: string; buyer_id: string; store_id: string; status: string };
+  // #8: reviews only for delivered orders, one per target.
+  if (order.status !== 'delivered') return reply.code(409).send({ error: 'order_not_delivered', status: order.status });
+  const dup = await pool.query(
+    `SELECT id FROM reviews WHERE order_id = $1 AND
+     ((store_id IS NOT NULL AND rider_id IS NULL AND $2 = 'store') OR
+      (rider_id IS NOT NULL AND store_id IS NULL AND $2 = 'rider')) LIMIT 1`,
+    [order.id, parsed.data.target],
+  );
+  if ((dup.rowCount ?? 0) > 0) return reply.code(409).send({ error: 'review_exists' });
   let storeId: string | null = null;
   let riderId: string | null = null;
   if (parsed.data.target === 'store') {
@@ -633,11 +747,17 @@ app.post<{ Params: { id: string } }>('/api/orders/:id/review', async (req, reply
 
 app.get('/api/store/orders', async (req, reply) => {
   if (!requirePersona(req, reply, ['store_owner'])) return;
-  const q = req.query as { status?: string; ownerEmail?: string };
-  const { storeIds } = await resolveOwnerStoreIds(q.ownerEmail);
+  const resolved = await requireOwnerStoreIds(req, reply);
+  if (!resolved) return;
+  const { storeIds } = resolved;
   if (storeIds.length === 0) return { orders: [] };
+  const q = req.query as { status?: string };
   const params: unknown[] = [storeIds];
-  let sql = `SELECT o.*, s.name AS store_name FROM orders o JOIN stores s ON s.id = o.store_id
+  let sql = `SELECT o.*, s.name AS store_name, u.name AS buyer_name,
+                    u.email AS buyer_email, u.phone AS buyer_phone,
+                    (SELECT count(*)::int FROM order_items WHERE order_id = o.id) AS items_count
+             FROM orders o JOIN stores s ON s.id = o.store_id
+             LEFT JOIN users u ON u.id = o.buyer_id
              WHERE o.store_id = ANY($1)`;
   if (q.status) {
     params.push(q.status);
@@ -655,8 +775,9 @@ app.patch<{ Params: { id: string } }>('/api/store/orders/:id', async (req, reply
   if (!uuidParam.safeParse(req.params.id).success) return badId(reply, 'order id');
   const parsed = storeActionSchema.safeParse(req.body);
   if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', issues: parsed.error.issues });
-  const q = req.query as { ownerEmail?: string };
-  const { storeIds } = await resolveOwnerStoreIds(q.ownerEmail);
+  const resolved = await requireOwnerStoreIds(req, reply);
+  if (!resolved) return;
+  const { storeIds } = resolved;
   const r = await pool.query('SELECT id, store_id, status FROM orders WHERE id = $1', [req.params.id]);
   if (r.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
   const order = r.rows[0] as { id: string; store_id: string; status: string };
@@ -674,17 +795,33 @@ app.patch<{ Params: { id: string } }>('/api/store/orders/:id', async (req, reply
   if (next === 'cancelled') {
     await pool.query("UPDATE orders SET payment_status = 'refunded' WHERE id = $1", [order.id]);
     await pool.query("UPDATE payments SET status = 'refunded' WHERE order_id = $1", [order.id]);
+    await releaseOrderAssignment(order.id); // #5: free rider + expire live offers
   }
   emitOrderUpdated(order.id, next);
   if (next === 'store_accepted' || next === 'ready') void dispatchOrder(order.id);
   return { order: await getOrderFull(order.id) };
 });
 
+// Issue #1: the store client fetches this route — it never existed.
+app.get<{ Params: { id: string } }>('/api/store/orders/:id', async (req, reply) => {
+  if (!requirePersona(req, reply, ['store_owner'])) return;
+  if (!uuidParam.safeParse(req.params.id).success) return badId(reply, 'order id');
+  const resolved = await requireOwnerStoreIds(req, reply);
+  if (!resolved) return;
+  const full = await getOrderFull(req.params.id);
+  if (!full) return reply.code(404).send({ error: 'order_not_found' });
+  if (!resolved.storeIds.includes((full as Record<string, unknown>).store_id as string))
+    return reply.code(404).send({ error: 'order_not_found' });
+  return { order: full };
+});
+
 app.get('/api/store/stats', async (req, reply) => {
   if (!requirePersona(req, reply, ['store_owner'])) return;
-  const q = req.query as { ownerEmail?: string };
-  const { ownerId, storeIds } = await resolveOwnerStoreIds(q.ownerEmail);
-  if (storeIds.length === 0) return { ownerId, revenue_today: 0, active_count: 0, store_count: 0 };
+  const resolved = await requireOwnerStoreIds(req, reply);
+  if (!resolved) return;
+  const { ownerId, storeIds } = resolved;
+  if (storeIds.length === 0)
+    return { ownerId, revenue_today: 0, active_count: 0, delivered_today: 0, store_count: 0 };
   const rev = await pool.query(
     `SELECT COALESCE(SUM(total),0)::int AS revenue FROM orders
      WHERE store_id = ANY($1) AND status <> 'cancelled' AND created_at >= date_trunc('day', now())`,
@@ -695,11 +832,19 @@ app.get('/api/store/stats', async (req, reply) => {
      WHERE store_id = ANY($1) AND status NOT IN ('delivered','cancelled')`,
     [storeIds],
   );
+  // #14: the dashboard renders a delivered-today card — serve it instead of
+  // letting the client normalize a missing field to a permanent 0.
+  const done = await pool.query(
+    `SELECT count(*)::int AS delivered FROM orders
+     WHERE store_id = ANY($1) AND status = 'delivered' AND created_at >= date_trunc('day', now())`,
+    [storeIds],
+  );
   return {
     ownerId,
     store_count: storeIds.length,
     revenue_today: (rev.rows[0] as { revenue: number }).revenue,
     active_count: (act.rows[0] as { active: number }).active,
+    delivered_today: (done.rows[0] as { delivered: number }).delivered,
   };
 });
 
@@ -715,8 +860,9 @@ app.patch<{ Params: { id: string } }>('/api/menu-items/:id', async (req, reply) 
   if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', issues: parsed.error.issues });
   if (parsed.data.is_available === undefined && parsed.data.price === undefined)
     return reply.code(400).send({ error: 'nothing_to_update' });
-  const q = req.query as { ownerEmail?: string };
-  const { storeIds } = await resolveOwnerStoreIds(q.ownerEmail);
+  const resolved = await requireOwnerStoreIds(req, reply);
+  if (!resolved) return;
+  const { storeIds } = resolved;
   const r = await pool.query('SELECT * FROM menu_items WHERE id = $1', [req.params.id]);
   if (r.rowCount === 0) return reply.code(404).send({ error: 'menu_item_not_found' });
   const item = r.rows[0] as { store_id: string };
@@ -743,32 +889,66 @@ app.patch<{ Params: { id: string } }>('/api/menu-items/:id', async (req, reply) 
 app.post<{ Params: { id: string } }>('/api/offers/:id/accept', async (req, reply) => {
   if (!requirePersona(req, reply, ['rider'])) return;
   if (!uuidParam.safeParse(req.params.id).success) return badId(reply, 'offer id');
-  const r = await pool.query('SELECT * FROM offers WHERE id = $1', [req.params.id]);
-  if (r.rowCount === 0) return reply.code(404).send({ error: 'offer_not_found' });
-  const offer = r.rows[0] as { id: string; order_id: string; rider_id: string; status: string; expires_at: string | null };
-  if (offer.status !== 'offered') return reply.code(409).send({ error: 'offer_not_live', status: offer.status });
-  if (offer.expires_at && new Date(offer.expires_at).getTime() < Date.now()) {
-    await pool.query("UPDATE offers SET status = 'expired' WHERE id = $1 AND status = 'offered'", [offer.id]);
-    void dispatchOrder(offer.order_id);
-    return reply.code(410).send({ error: 'offer_expired' });
-  }
-  const o = await pool.query('SELECT id, status FROM orders WHERE id = $1', [offer.order_id]);
-  const order = o.rows[0] as { status: string };
-  if (!DISPATCHABLE.includes(order.status) || order.status === 'rider_assigned') {
-    // still allow assign from ready/preparing etc; block terminal states
-    if (['delivered', 'cancelled', 'picked_up', 'delivering'].includes(order.status))
+  // #4: bind the caller to the offer — stub identity arrives via ?riderEmail=.
+  const callerId = await resolveRiderId(req);
+  let orderId = '';
+  // #4: hold a row lock across check+assign so concurrent accepts serialize.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM offers WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (r.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return reply.code(404).send({ error: 'offer_not_found' });
+    }
+    const offer = r.rows[0] as { id: string; order_id: string; rider_id: string; status: string; expires_at: string | null };
+    if (!callerId || callerId !== offer.rider_id) {
+      await client.query('ROLLBACK');
+      return reply.code(403).send({ error: 'offer_not_yours' });
+    }
+    if (offer.status !== 'offered') {
+      await client.query('ROLLBACK');
+      return reply.code(409).send({ error: 'offer_not_live', status: offer.status });
+    }
+    if (offer.expires_at && new Date(offer.expires_at).getTime() < Date.now()) {
+      await client.query("UPDATE offers SET status = 'expired' WHERE id = $1 AND status = 'offered'", [offer.id]);
+      await client.query('COMMIT');
+      void dispatchOrder(offer.order_id);
+      return reply.code(410).send({ error: 'offer_expired' });
+    }
+    const o = await client.query('SELECT id, status FROM orders WHERE id = $1 FOR UPDATE', [offer.order_id]);
+    const order = o.rows[0] as { status: string };
+    if (['delivered', 'cancelled', 'picked_up', 'delivering', 'rider_assigned'].includes(order.status)) {
+      await client.query('ROLLBACK');
       return reply.code(409).send({ error: 'order_not_assignable', status: order.status });
+    }
+    orderId = offer.order_id;
+    await client.query("UPDATE offers SET status = 'accepted' WHERE id = $1", [offer.id]);
+    await client.query("UPDATE offers SET status = 'expired' WHERE order_id = $1 AND status = 'offered' AND id <> $2", [
+      offer.order_id,
+      offer.id,
+    ]);
+    const nowIso = new Date().toISOString();
+    await client.query('UPDATE orders SET status = $2, updated_at = now() WHERE id = $1', [offer.order_id, 'rider_assigned']);
+    await client.query('UPDATE orders SET timeline = timeline || $2::jsonb, updated_at = now() WHERE id = $1', [
+      offer.order_id,
+      JSON.stringify({ at: nowIso, status: 'rider_assigned', note: `rider accepted offer ${offer.id}` }),
+    ]);
+    await client.query("UPDATE rider_profiles SET status = 'busy', updated_at = now() WHERE user_id = $1", [offer.rider_id]);
+    await client.query('COMMIT');
+  } catch (e) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      /* report the original error */
+    }
+    throw e;
+  } finally {
+    client.release();
   }
-  await pool.query("UPDATE offers SET status = 'accepted' WHERE id = $1", [offer.id]);
-  await pool.query("UPDATE offers SET status = 'expired' WHERE order_id = $1 AND status = 'offered' AND id <> $2", [
-    offer.order_id,
-    offer.id,
-  ]);
-  await setOrderStatus(offer.order_id, 'rider_assigned', `rider accepted offer ${offer.id}`);
-  await pool.query("UPDATE rider_profiles SET status = 'busy', updated_at = now() WHERE user_id = $1", [offer.rider_id]);
-  emitOfferCreated({ ...offer, status: 'accepted' }, offer.order_id);
-  emitOrderUpdated(offer.order_id, 'rider_assigned');
-  return { order: await getOrderFull(offer.order_id) };
+  emitOfferCreated({ id: req.params.id, status: 'accepted' }, orderId);
+  emitOrderUpdated(orderId, 'rider_assigned');
+  return { order: await getOrderFull(orderId) };
 });
 
 app.post<{ Params: { id: string } }>('/api/offers/:id/decline', async (req, reply) => {
@@ -778,6 +958,10 @@ app.post<{ Params: { id: string } }>('/api/offers/:id/decline', async (req, repl
   if (r.rowCount === 0) return reply.code(404).send({ error: 'offer_not_found' });
   const offer = r.rows[0] as { id: string; order_id: string; status: string };
   if (offer.status !== 'offered') return reply.code(409).send({ error: 'offer_not_live', status: offer.status });
+  // #4: riders decline only their own offers (declining re-triggers dispatch).
+  const callerId = await resolveRiderId(req);
+  if (!callerId || callerId !== (r.rows[0] as { rider_id: string }).rider_id)
+    return reply.code(403).send({ error: 'offer_not_yours' });
   await pool.query("UPDATE offers SET status = 'declined' WHERE id = $1", [offer.id]);
   const o = await pool.query('SELECT status FROM orders WHERE id = $1', [offer.order_id]);
   if ((o.rowCount ?? 0) > 0) emitOrderUpdated(offer.order_id, (o.rows[0] as { status: string }).status);
@@ -822,10 +1006,18 @@ app.post('/api/rider/presence', async (req, reply) => {
      FROM rider_profiles rp JOIN users u ON u.id = rp.user_id WHERE u.id = $1`,
     [riderId],
   );
+  if (parsed.data.status === 'online') schedulePresenceSweep(); // #7: re-sweep stalled dispatchables
   return { rider: cur.rows[0] };
 });
 
 const pickupSchema = z.object({ pin: z.string().min(4).max(8) });
+
+// #10: brute-force brake for the 4-digit pickup PIN. In-memory (resets on
+// restart — acceptable for the POC; a persistent counter belongs with #16).
+// 10 wrong tries lock the order for 5 minutes.
+const pinAttempts = new Map<string, { fails: number; lockedUntil: number }>();
+const PIN_MAX_FAILS = 10;
+const PIN_LOCK_MS = 5 * 60 * 1000;
 
 app.post<{ Params: { id: string } }>('/api/orders/:id/pickup', async (req, reply) => {
   if (!requirePersona(req, reply, ['rider'])) return;
@@ -837,7 +1029,18 @@ app.post<{ Params: { id: string } }>('/api/orders/:id/pickup', async (req, reply
   const order = r.rows[0] as { id: string; status: string; pickup_pin: string | null };
   if (!['rider_assigned', 'delivering'].includes(order.status))
     return reply.code(409).send({ error: 'not_ready_for_pickup', status: order.status });
-  if ((order.pickup_pin ?? '') !== parsed.data.pin) return reply.code(400).send({ error: 'bad_pin' });
+  const gate = pinAttempts.get(order.id);
+  if (gate && gate.lockedUntil > Date.now())
+    return reply.code(429).send({ error: 'pin_locked_out', retry_after_ms: gate.lockedUntil - Date.now() });
+  if ((order.pickup_pin ?? '') !== parsed.data.pin) {
+    const fails = (gate?.fails ?? 0) + 1;
+    pinAttempts.set(order.id, {
+      fails,
+      lockedUntil: fails >= PIN_MAX_FAILS ? Date.now() + PIN_LOCK_MS : 0,
+    });
+    return reply.code(400).send({ error: 'bad_pin', attempts_left: Math.max(0, PIN_MAX_FAILS - fails) });
+  }
+  pinAttempts.delete(order.id);
   await setOrderStatus(order.id, 'picked_up', 'picked up by rider');
   emitOrderUpdated(order.id, 'picked_up');
   return { order: await getOrderFull(order.id) };
@@ -883,6 +1086,7 @@ app.post('/api/tracking', async (req, reply) => {
 });
 
 app.get<{ Params: { id: string } }>('/api/orders/:id/tracking', async (req, reply) => {
+  if (!req.persona) return reply.code(403).send({ error: 'persona_required' });
   if (!uuidParam.safeParse(req.params.id).success) return badId(reply, 'order id');
   const o = await pool.query('SELECT id FROM orders WHERE id = $1', [req.params.id]);
   if (o.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
@@ -1087,6 +1291,7 @@ const ticketMsgSchema = z.object({
 });
 
 app.post<{ Params: { id: string } }>('/api/tickets/:id/messages', async (req, reply) => {
+  if (!req.persona) return reply.code(403).send({ error: 'persona_required' });
   if (!uuidParam.safeParse(req.params.id).success) return badId(reply, 'ticket id');
   const parsed = ticketMsgSchema.safeParse(req.body);
   if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', issues: parsed.error.issues });
@@ -1102,6 +1307,7 @@ app.post<{ Params: { id: string } }>('/api/tickets/:id/messages', async (req, re
 });
 
 app.post<{ Params: { id: string } }>('/api/tickets/:id/resolve', async (req, reply) => {
+  if (!requirePersona(req, reply, ['operator', 'support'])) return;
   if (!uuidParam.safeParse(req.params.id).success) return badId(reply, 'ticket id');
   const upd = await pool.query("UPDATE tickets SET status = 'resolved' WHERE id = $1 RETURNING *", [req.params.id]);
   if (upd.rowCount === 0) return reply.code(404).send({ error: 'ticket_not_found' });
@@ -1110,17 +1316,25 @@ app.post<{ Params: { id: string } }>('/api/tickets/:id/resolve', async (req, rep
 });
 
 app.post<{ Params: { id: string } }>('/api/tickets/:id/refund', async (req, reply) => {
+  if (!requirePersona(req, reply, ['operator', 'support'])) return;
   if (!uuidParam.safeParse(req.params.id).success) return badId(reply, 'ticket id');
   const t = await pool.query('SELECT * FROM tickets WHERE id = $1', [req.params.id]);
   if (t.rowCount === 0) return reply.code(404).send({ error: 'ticket_not_found' });
   const ticket = t.rows[0] as { id: string; order_id: string | null };
   if (!ticket.order_id) return reply.code(400).send({ error: 'ticket_has_no_order' });
+  // #3: refunds only make sense on terminal orders — a placed/preparing order
+  // keeps flowing after a refund, which is incoherent. Cancel first instead.
+  const st = await pool.query('SELECT status FROM orders WHERE id = $1', [ticket.order_id]);
+  if (st.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
+  const orderStatus = (st.rows[0] as { status: string }).status;
+  if (!['delivered', 'cancelled'].includes(orderStatus))
+    return reply.code(409).send({ error: 'order_not_refundable', status: orderStatus });
   await pool.query("UPDATE payments SET status = 'refunded' WHERE order_id = $1", [ticket.order_id]);
   await pool.query("UPDATE orders SET payment_status = 'refunded' WHERE id = $1", [ticket.order_id]);
-  const o = await pool.query('SELECT status FROM orders WHERE id = $1', [ticket.order_id]);
-  const status = (o.rows[0] as { status: string }).status;
-  await appendTimeline(ticket.order_id, status, `refunded via support ticket ${ticket.id}`);
-  emitOrderUpdated(ticket.order_id, status);
+  // #5: orderStatus is terminal here (guarded above), so freeing is always safe.
+  await releaseOrderAssignment(ticket.order_id);
+  await appendTimeline(ticket.order_id, orderStatus, `refunded via support ticket ${ticket.id}`);
+  emitOrderUpdated(ticket.order_id, orderStatus);
   emitTicketUpdated({ ticket_id: ticket.id, refunded_order: ticket.order_id });
   return { ok: true, order: await getOrderFull(ticket.order_id) };
 });
@@ -1131,15 +1345,23 @@ app.post<{ Params: { id: string } }>('/api/tickets/:id/refund', async (req, repl
 
 await maybeInitRedis();
 
+// #12: offer expiry is derived from DB timestamps, not process memory —
+// recover anything a crash left 'offered' and keep sweeping for timeliness.
+void sweepUnassignedDispatchable().catch((e: unknown) => app.log.error(e));
+setInterval(() => {
+  void sweepUnassignedDispatchable().catch((e: unknown) => app.log.error(e));
+}, 30_000);
+
 const port = Number(process.env.API_PORT ?? 3001);
 await app.listen({ port, host: '0.0.0.0' });
 
-io = new SocketIOServer(app.server, { cors: { origin: true } });
+io = new SocketIOServer(app.server, { cors: { origin: ALLOWED_ORIGINS } });
 io.on('connection', (socket) => {
   socket.on('join-order', (payload: unknown) => {
     const orderId =
       typeof payload === 'string' ? payload : (payload as { orderId?: string } | null)?.orderId;
-    if (orderId) void socket.join(`order:${orderId}`);
+    // Reject garbage room names — rooms are order UUIDs or city.ops only.
+    if (orderId && uuidParam.safeParse(orderId).success) void socket.join(`order:${orderId}`);
   });
   socket.on('join-ops', () => {
     void socket.join('city.ops');

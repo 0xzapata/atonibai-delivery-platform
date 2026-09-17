@@ -197,5 +197,11 @@ CREATE INDEX IF NOT EXISTS idx_tracking_order_at ON delivery_tracking (order_id,
 CREATE INDEX IF NOT EXISTS idx_menu_items_store ON menu_items (store_id);
 CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items (order_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_order ON reviews (order_id);
+-- #8: one review per target per order (store XOR rider). Backstop for the
+-- 409 guard in POST /api/orders/:id/review.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reviews_order_store
+  ON reviews (order_id) WHERE store_id IS NOT NULL AND rider_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reviews_order_rider
+  ON reviews (order_id) WHERE rider_id IS NOT NULL AND store_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tickets_order ON tickets (order_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages (ticket_id);
