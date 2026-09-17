@@ -289,6 +289,12 @@ let presenceSweepTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function sweepUnassignedDispatchable(): Promise<void> {
   try {
+    // #12: expiry is a DB timestamp, not process memory — a crash may leave
+    // 'offered' rows past expires_at, so expire them here before redispatch.
+    await pool.query(
+      `UPDATE offers SET status = 'expired'
+       WHERE status = 'offered' AND expires_at IS NOT NULL AND expires_at <= now()`,
+    );
     const r = await pool.query(
       `SELECT id FROM orders WHERE status = ANY($1)
        AND NOT EXISTS (
@@ -1338,6 +1344,13 @@ app.post<{ Params: { id: string } }>('/api/tickets/:id/refund', async (req, repl
 // ---------------------------------------------------------------------------
 
 await maybeInitRedis();
+
+// #12: offer expiry is derived from DB timestamps, not process memory —
+// recover anything a crash left 'offered' and keep sweeping for timeliness.
+void sweepUnassignedDispatchable().catch((e: unknown) => app.log.error(e));
+setInterval(() => {
+  void sweepUnassignedDispatchable().catch((e: unknown) => app.log.error(e));
+}, 30_000);
 
 const port = Number(process.env.API_PORT ?? 3001);
 await app.listen({ port, host: '0.0.0.0' });
