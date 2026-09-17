@@ -38,6 +38,33 @@
    the old browser session (`errors` aggregates all sessions). Gotcha added
    to AGENTS.md.
 3. Buyer track view shows no rider marker until first tracking ping exists
-   (caption still references a rider dot) — cosmetic copy mismatch. Follow-up.
+   (caption still references a rider dot) — RESOLVED 2026-09-17 ~06:45 UTC
+   (`bf09f5d`, merged): deeper bug found via screenshot ground-truth —
+   `store`/`items` memos never unwrapped `{order:...}`, so no store pin, no
+   route, no Items section ever rendered. Fixed unwrap + rider marker now uses
+   the latest real tracking ping (was status-interpolated) + caption is
+   conditional (`Route via OSRM|Straight-line route…` + `· car icon = rider`
+   only when pings exist). Verified on :5175 and merged :5173 with screenshots.
 4. `agent-browser click` needs quoted `@refs` in PowerShell (`'@e3'`); `eval`
    strips double quotes (single-quote doubling works). Already in `~/.AGENTS.md`.
+5. Verification-subagent UI reports need screenshot ground-truth: one report
+   claimed an "orange route polyline" on the track page that the screenshot
+   proves was never rendered (store-unwrap bug above). Always `Read` the
+   screenshot image before trusting element/snapshot claims.
+
+## Pass 2 — 2026-09-17 ~06:00–06:50 UTC (fixes for Pass 1 items 2+3)
+
+- **Verifier:** Muse Spark, direct (all `Task` subagent spawns kept getting
+  cancelled; a cancelled caption subagent had left uncommitted work in the
+  `fix/track-rider-caption` worktree, which was reviewed, completed, and
+  committed as `bf09f5d`).
+- **Merges:** `b30273d` (caption/track-map) + `045612a` (carto docs).
+- **Checks:** `tsc --noEmit` clean (web + api); seed baseline exact
+  14/6/30/8/3/2/7; `/health` stores=6; web :5173 → 200. Dev servers had died
+  mid-pass (nothing listening on :3001/:5173); restarted via
+  `npm run dev:api` + `npm run dev:web`. No test rows created, nothing to clean.
+- **UI proof:** `pwshot/vfy-caption-with-rider.png` (...008: route + store pin
+  + rider marker + `Route via OSRM · car icon = rider`),
+  `pwshot/vfy-caption-no-rider.png` (...007 preparing, 0 pings: `Route via
+  OSRM`, no rider ref/marker), `pwshot/vfy-track-fixed-main.png` (merged code
+  live on :5173).
