@@ -318,7 +318,13 @@ function schedulePresenceSweep(): void {
 }
 
 async function getOrderFull(orderId: string): Promise<Record<string, unknown> | null> {
-  const o = await pool.query('SELECT * FROM orders WHERE id = $1', [orderId]);
+  // #14: store UI renders buyer name/contact + item counts — join them here
+  // instead of letting client normalizers silently fall back to placeholders.
+  const o = await pool.query(
+    `SELECT o.*, u.name AS buyer_name, u.email AS buyer_email, u.phone AS buyer_phone
+     FROM orders o LEFT JOIN users u ON u.id = o.buyer_id WHERE o.id = $1`,
+    [orderId],
+  );
   if (o.rowCount === 0) return null;
   const order = o.rows[0] as Record<string, unknown>;
   const [items, store, payment, offer, tracking] = await Promise.all([
@@ -741,7 +747,11 @@ app.get('/api/store/orders', async (req, reply) => {
   if (storeIds.length === 0) return { orders: [] };
   const q = req.query as { status?: string };
   const params: unknown[] = [storeIds];
-  let sql = `SELECT o.*, s.name AS store_name FROM orders o JOIN stores s ON s.id = o.store_id
+  let sql = `SELECT o.*, s.name AS store_name, u.name AS buyer_name,
+                    u.email AS buyer_email, u.phone AS buyer_phone,
+                    (SELECT count(*)::int FROM order_items WHERE order_id = o.id) AS items_count
+             FROM orders o JOIN stores s ON s.id = o.store_id
+             LEFT JOIN users u ON u.id = o.buyer_id
              WHERE o.store_id = ANY($1)`;
   if (q.status) {
     params.push(q.status);
@@ -804,7 +814,8 @@ app.get('/api/store/stats', async (req, reply) => {
   const resolved = await requireOwnerStoreIds(req, reply);
   if (!resolved) return;
   const { ownerId, storeIds } = resolved;
-  if (storeIds.length === 0) return { ownerId, revenue_today: 0, active_count: 0, store_count: 0 };
+  if (storeIds.length === 0)
+    return { ownerId, revenue_today: 0, active_count: 0, delivered_today: 0, store_count: 0 };
   const rev = await pool.query(
     `SELECT COALESCE(SUM(total),0)::int AS revenue FROM orders
      WHERE store_id = ANY($1) AND status <> 'cancelled' AND created_at >= date_trunc('day', now())`,
@@ -815,11 +826,19 @@ app.get('/api/store/stats', async (req, reply) => {
      WHERE store_id = ANY($1) AND status NOT IN ('delivered','cancelled')`,
     [storeIds],
   );
+  // #14: the dashboard renders a delivered-today card — serve it instead of
+  // letting the client normalize a missing field to a permanent 0.
+  const done = await pool.query(
+    `SELECT count(*)::int AS delivered FROM orders
+     WHERE store_id = ANY($1) AND status = 'delivered' AND created_at >= date_trunc('day', now())`,
+    [storeIds],
+  );
   return {
     ownerId,
     store_count: storeIds.length,
     revenue_today: (rev.rows[0] as { revenue: number }).revenue,
     active_count: (act.rows[0] as { active: number }).active,
+    delivered_today: (done.rows[0] as { delivered: number }).delivered,
   };
 });
 
