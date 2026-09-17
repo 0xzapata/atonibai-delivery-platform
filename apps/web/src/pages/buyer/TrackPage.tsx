@@ -18,14 +18,6 @@ const ESRI_TILES =
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
 const ESRI_ATTR = 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics | &copy; OpenStreetMap contributors';
 
-/** Canonical fulfilment order — used for progress + rider interpolation. */
-const STAGES = ['placed', 'confirmed', 'preparing', 'ready', 'picked_up', 'delivering', 'delivered'];
-
-function stageIndex(status: string): number {
-  const i = STAGES.indexOf(status.trim().toLowerCase());
-  return i < 0 ? 0 : i;
-}
-
 function labelPin(text: string, bg: string): L.DivIcon {
   return L.divIcon({
     className: '',
@@ -141,16 +133,19 @@ export default function TrackPage() {
   });
 
   const order = useMemo(() => toOrderInfo(orderQuery.data), [orderQuery.data]);
-  const store = useMemo(() => {
+  /** GET /api/orders/:id nests the full order under `order` — unwrap once. */
+  const inner = useMemo(() => {
     const root = asRecord(orderQuery.data);
-    return toStoreLite(root.store ?? root.restaurant ?? null);
+    return asRecord(root.order ?? orderQuery.data);
   }, [orderQuery.data]);
+  const store = useMemo(() => {
+    return toStoreLite(inner.store ?? inner.restaurant ?? null);
+  }, [inner]);
   const items = useMemo(() => {
-    const root = asRecord(orderQuery.data);
-    const raw = root.items;
+    const raw = inner.items;
     if (!Array.isArray(raw)) return [] as Array<Record<string, unknown>>;
     return raw.map((it) => asRecord(it));
-  }, [orderQuery.data]);
+  }, [inner]);
 
   const storeLat = store?.lat ?? null;
   const storeLng = store?.lng ?? null;
@@ -188,16 +183,30 @@ export default function TrackPage() {
     return [];
   }, [route, hasGeo, storeLat, storeLng]);
 
-  const progress = useMemo(() => {
-    const idx = stageIndex(order?.status ?? 'placed');
-    return STAGES.length > 1 ? idx / (STAGES.length - 1) : 0;
-  }, [order?.status]);
+  /** Live rider pings served nested on GET /api/orders/:id (`tracking`). */
+  const trackingPoints: Array<[number, number]> = useMemo(() => {
+    const raw = inner.tracking;
+    if (!Array.isArray(raw)) return [];
+    const pts: Array<[number, number]> = [];
+    for (const p of raw) {
+      const r = asRecord(p);
+      const lat = r.lat;
+      const lng = r.lng;
+      if (typeof lat === 'number' && typeof lng === 'number' && Number.isFinite(lat) && Number.isFinite(lng)) {
+        pts.push([lat, lng]);
+      }
+    }
+    return pts;
+  }, [inner]);
 
+  /** Rider marker = latest real tracking ping; null until the rider starts pinging. */
   const riderPos: [number, number] | null = useMemo(() => {
-    if (line.length < 2) return null;
-    const i = Math.min(line.length - 1, Math.round(progress * (line.length - 1)));
-    return line[i] ?? null;
-  }, [line, progress]);
+    if (trackingPoints.length === 0) return null;
+    return trackingPoints[trackingPoints.length - 1] ?? null;
+  }, [trackingPoints]);
+
+  /** Non-null route state = real OSRM driving route; null = straight-line fallback. */
+  const hasLiveRoute = route !== null && route.length > 1;
 
   const center: [number, number] = useMemo(() => {
     if (line.length > 0) {
@@ -295,7 +304,8 @@ export default function TrackPage() {
               </MapContainer>
             </div>
             <p className="border-t border-stone-100 px-4 py-2 text-[11px] text-stone-400">
-              Route via OSRM (straight line fallback) · green dot = rider (car icon lands in T8)
+              {hasLiveRoute ? 'Route via OSRM' : 'Straight-line route (OSRM unavailable)'}
+              {riderPos ? ' · car icon = rider' : ''}
             </p>
           </div>
 
