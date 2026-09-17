@@ -22,12 +22,8 @@ for (const t of ['application/json', 'application/x-www-form-urlencoded'])
   app.addContentTypeParser(t, { parseAs: 'string' }, (req, body, done) => {
     try {
       if (!body) return done(null, undefined);
-      done(
-        null,
-        String(req.headers['content-type'] ?? '').includes('json')
-          ? JSON.parse(body as string)
-          : Object.fromEntries(new URLSearchParams(body as string)),
-      );
+      const isJson = String(req.headers['content-type'] ?? '').includes('json');
+      done(null, isJson ? JSON.parse(body as string) : Object.fromEntries(new URLSearchParams(body as string)));
     } catch (e) {
       done(e as Error);
     }
@@ -39,25 +35,25 @@ let io: SocketIOServer | undefined;
 
 // --- query + guards + geo + emits -------------------------------------------
 const q = (text: string, params?: unknown[]) => (params ? pool.query(text, params as never[]) : pool.query(text));
-const uuidParam = z.string().uuid();
+const one = async <T>(text: string, params?: unknown[]): Promise<T | null> => ((await q(text, params)).rows[0] as T | undefined) ?? null;
 // One guard for persona + uuid params (replaces requirePersona/badId/uuidParam at call sites).
 const ok = (req: FastifyRequest, reply: FastifyReply, allow?: Persona[], id?: string, what = 'id'): boolean => {
   if (allow && (!req.persona || !allow.includes(req.persona))) {
     reply.code(403).send({ error: 'forbidden', need: allow, have: req.persona ?? null });
     return false;
   }
-  if (id !== undefined && !uuidParam.safeParse(id).success) {
+  if (id !== undefined && !z.string().uuid().safeParse(id).success) {
     reply.code(400).send({ error: 'invalid_id', what });
     return false;
   }
   return true;
 };
 const badBody = (reply: FastifyReply, issues: unknown) => reply.code(400).send({ error: 'invalid_body', issues });
+/** haversine km; fee = 39 base + 8/km store->buyer, min 39. Whole pesos. */
 const haversineKm = (a: number, b: number, c: number, d: number): number => {
   const R = 6371, r = Math.PI / 180, s1 = Math.sin(((c - a) * r) / 2), s2 = Math.sin(((d - b) * r) / 2);
   return 2 * R * Math.asin(Math.sqrt(s1 * s1 + Math.cos(a * r) * Math.cos(c * r) * s2 * s2));
 };
-/** 39 base + 8/km store->buyer, min 39. Whole pesos. */
 const deliveryFeeForKm = (km: number): number => Math.max(39, Math.round(39 + 8 * km));
 // One fan-out (replaces 5 emit* helpers): order room (when orderId) + city.ops + global.
 const emit = (ev: string, payload: unknown, orderId?: string): void => {
@@ -100,11 +96,7 @@ async function maybeInitRedis(): Promise<void> {
   await new Promise<void>((resolve) => {
     const sock = net.connect({ host: m[1] as string, port: Number(m[2] ?? 6379) });
     const done = (up: boolean) => {
-      try {
-        sock.destroy();
-      } catch {
-        /* noop */
-      }
+      try { sock.destroy(); } catch { /* noop */ }
       app.log.info(up ? 'Redis reachable (unused in POC paths)' : 'Redis unreachable — continuing without it');
       resolve();
     };
@@ -117,20 +109,14 @@ async function maybeInitRedis(): Promise<void> {
 // --- dispatch: nearest online rider, 25s expiry + re-offer loop ---------------
 async function dispatchOrder(orderId: string): Promise<void> {
   try {
-    const o = await q('SELECT id, store_id, status FROM orders WHERE id = $1', [orderId]);
-    if (o.rowCount === 0) return;
-    const order = o.rows[0] as { id: string; store_id: string; status: string };
+    const order = await one<{ id: string; store_id: string; status: string }>('SELECT id, store_id, status FROM orders WHERE id = $1', [orderId]);
+    if (!order) return;
     if (!DISPATCHABLE.includes(order.status)) return;
-    const live = await q("SELECT id FROM offers WHERE order_id = $1 AND status = 'offered' AND (expires_at IS NULL OR expires_at > now()) LIMIT 1", [orderId]);
-    if ((live.rowCount ?? 0) > 0) return;
-    const riders = await q(
-      `SELECT u.id, u.name FROM rider_profiles rp JOIN users u ON u.id = rp.user_id JOIN stores s ON s.id = $2 WHERE rp.status = 'online' AND rp.last_location IS NOT NULL AND u.id NOT IN (SELECT rider_id FROM offers WHERE order_id = $1) ORDER BY rp.last_location <-> s.location LIMIT 1`,
-      [orderId, order.store_id],
-    );
+    if (await one("SELECT id FROM offers WHERE order_id = $1 AND status = 'offered' AND (expires_at IS NULL OR expires_at > now()) LIMIT 1", [orderId])) return;
+    const riders = await q(`SELECT u.id, u.name FROM rider_profiles rp JOIN users u ON u.id = rp.user_id JOIN stores s ON s.id = $2 WHERE rp.status = 'online' AND rp.last_location IS NOT NULL AND u.id NOT IN (SELECT rider_id FROM offers WHERE order_id = $1) ORDER BY rp.last_location <-> s.location LIMIT 1`, [orderId, order.store_id]);
     if ((riders.rowCount ?? 0) === 0) return void emit('order.updated', { orderId, status: order.status }, orderId);
     const rider = riders.rows[0] as { id: string; name: string };
-    const off = await q(`INSERT INTO offers (order_id, rider_id, status, expires_at) VALUES ($1, $2, 'offered', now() + interval '25 seconds') RETURNING *`, [orderId, rider.id]);
-    const offer = off.rows[0] as Record<string, unknown>;
+    const offer = (await one<Record<string, unknown>>(`INSERT INTO offers (order_id, rider_id, status, expires_at) VALUES ($1, $2, 'offered', now() + interval '25 seconds') RETURNING *`, [orderId, rider.id])) as Record<string, unknown>;
     emit('offer.created', { ...offer, rider_name: rider.name }, orderId);
     emit('order.updated', { orderId, status: order.status }, orderId);
     scheduleOfferExpiry(offer['id'] as string, orderId);
@@ -142,12 +128,12 @@ function scheduleOfferExpiry(offerId: string, orderId: string): void {
   setTimeout(() => {
     void (async () => {
       try {
-        const r = await q('SELECT id, status FROM offers WHERE id = $1', [offerId]);
-        if ((r.rowCount ?? 0) === 0 || (r.rows[0] as { status: string }).status !== 'offered') return;
+        const r = await one<{ status: string }>('SELECT id, status FROM offers WHERE id = $1', [offerId]);
+        if (r?.status !== 'offered') return;
         await q("UPDATE offers SET status = 'expired' WHERE id = $1 AND status = 'offered'", [offerId]);
-        const o = await q('SELECT status FROM orders WHERE id = $1', [orderId]);
-        if ((o.rowCount ?? 0) === 0) return;
-        emit('order.updated', { orderId, status: (o.rows[0] as { status: string }).status }, orderId);
+        const o = await one<{ status: string }>('SELECT status FROM orders WHERE id = $1', [orderId]);
+        if (!o) return;
+        emit('order.updated', { orderId, status: o.status }, orderId);
         await dispatchOrder(orderId);
       } catch (e) {
         app.log.error({ err: e, offerId }, 'offer expiry check failed');
@@ -156,13 +142,11 @@ function scheduleOfferExpiry(offerId: string, orderId: string): void {
   }, 26000);
 }
 async function latestAcceptedRider(orderId: string): Promise<{ id: string; name: string } | null> {
-  const r = await q(`SELECT u.id, u.name FROM offers o JOIN users u ON u.id = o.rider_id WHERE o.order_id = $1 AND o.status = 'accepted' ORDER BY o.created_at DESC LIMIT 1`, [orderId]);
-  return ((r.rowCount ?? 0) === 0 ? null : (r.rows[0] as { id: string; name: string }));
+  return one<{ id: string; name: string }>(`SELECT u.id, u.name FROM offers o JOIN users u ON u.id = o.rider_id WHERE o.order_id = $1 AND o.status = 'accepted' ORDER BY o.created_at DESC LIMIT 1`, [orderId]);
 }
 async function getOrderFull(orderId: string): Promise<Record<string, unknown> | null> {
-  const o = await q('SELECT * FROM orders WHERE id = $1', [orderId]);
-  if (o.rowCount === 0) return null;
-  const order = o.rows[0] as Record<string, unknown>;
+  const order = await one<Record<string, unknown>>('SELECT * FROM orders WHERE id = $1', [orderId]);
+  if (!order) return null;
   const [items, store, payment, offer, tracking] = await Promise.all([
     q('SELECT * FROM order_items WHERE order_id = $1', [orderId]),
     q(`SELECT id, name, cuisine, image, rating, ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lng FROM stores WHERE id = $1`, [order['store_id']]),
@@ -174,12 +158,12 @@ async function getOrderFull(orderId: string): Promise<Record<string, unknown> | 
 }
 // matchRole=false keeps legacy buyer/opener lookups (email without role filter).
 async function userId(role: string, email?: string, matchRole = true): Promise<string | null> {
-  const r = email ? await q(`SELECT id FROM users WHERE email = $1${matchRole ? ' AND role = $2' : ''}`, matchRole ? [email, role] : [email]) : await q('SELECT id FROM users WHERE role = $1 ORDER BY created_at ASC LIMIT 1', [role]);
-  return ((r.rows[0] as { id: string } | undefined)?.id ?? null);
+  const r = email ? await one<{ id: string }>(`SELECT id FROM users WHERE email = $1${matchRole ? ' AND role = $2' : ''}`, matchRole ? [email, role] : [email]) : await one<{ id: string }>('SELECT id FROM users WHERE role = $1 ORDER BY created_at ASC LIMIT 1', [role]);
+  return (r?.id ?? null);
 }
 async function resolveOwnerStoreIds(ownerEmail?: string): Promise<{ ownerId: string; storeIds: string[] }> {
-  const byEmail = ownerEmail ? ((await q("SELECT id FROM users WHERE email = $1 AND role = 'store_owner'", [ownerEmail])).rows[0] as { id: string } | undefined) : undefined;
-  const owner = byEmail ?? ((await q("SELECT id FROM users WHERE role = 'store_owner' ORDER BY created_at ASC LIMIT 1")).rows[0] as { id: string });
+  const byEmail = ownerEmail ? await one<{ id: string }>("SELECT id FROM users WHERE email = $1 AND role = 'store_owner'", [ownerEmail]) : undefined;
+  const owner = byEmail ?? await one<{ id: string }>("SELECT id FROM users WHERE role = 'store_owner' ORDER BY created_at ASC LIMIT 1");
   if (!owner) throw new Error('no store owners seeded');
   const s = await q('SELECT id FROM stores WHERE owner_id = $1', [owner.id]);
   return { ownerId: owner.id, storeIds: s.rows.map((x: { id: string }) => x.id) };
@@ -207,8 +191,8 @@ app.get('/api/stores', async () => {
 });
 app.get<{ Params: { id: string } }>('/api/stores/:id/menu', async (req, reply) => {
   if (!ok(req, reply, undefined, req.params.id, 'store id')) return;
-  const store = await q('SELECT id, name FROM stores WHERE id = $1', [req.params.id]);
-  if (store.rowCount === 0) return reply.code(404).send({ error: 'store_not_found' });
+  const store = await one<{ id: string; name: string }>('SELECT id, name FROM stores WHERE id = $1', [req.params.id]);
+  if (!store) return reply.code(404).send({ error: 'store_not_found' });
   const [cats, items, options, choices] = await Promise.all([
     q('SELECT * FROM menu_categories WHERE store_id = $1 ORDER BY sort ASC', [req.params.id]),
     q('SELECT * FROM menu_items WHERE store_id = $1 ORDER BY name ASC', [req.params.id]),
@@ -223,11 +207,10 @@ app.get<{ Params: { id: string } }>('/api/stores/:id/menu', async (req, reply) =
   const catIds = new Set((cats.rows as Array<{ id: string }>).map((c) => c.id));
   for (const it of items.rows as Array<{ id: string; category_id: string | null } & Record<string, unknown>>) {
     const withOpts = { ...it, options: byItem.get(it.id) ?? [] };
-    if (it.category_id && catIds.has(it.category_id)) push(byCat, it.category_id, withOpts);
-    else uncategorized.push(withOpts);
+    if (it.category_id && catIds.has(it.category_id)) push(byCat, it.category_id, withOpts); else uncategorized.push(withOpts);
   }
   return {
-    store: store.rows[0],
+    store,
     categories: (cats.rows as Array<{ id: string; name: string }>).map((c) => ({ ...c, items: byCat.get(c.id) ?? [] })),
     uncategorized,
   };
@@ -320,10 +303,9 @@ app.get<{ Params: { id: string } }>('/api/orders/:id', async (req, reply) => {
 });
 app.post<{ Params: { id: string } }>('/api/orders/:id/cancel', async (req, reply) => {
   if (!ok(req, reply, undefined, req.params.id, 'order id')) return;
-  const r = await q('SELECT id, status FROM orders WHERE id = $1', [req.params.id]);
-  if (r.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
-  const status = (r.rows[0] as { status: string }).status;
-  if (!CANCELLABLE.includes(status)) return reply.code(409).send({ error: 'too_late_to_cancel', status });
+  const o = await one<{ status: string }>('SELECT id, status FROM orders WHERE id = $1', [req.params.id]);
+  if (!o) return reply.code(404).send({ error: 'order_not_found' });
+  if (!CANCELLABLE.includes(o.status)) return reply.code(409).send({ error: 'too_late_to_cancel', status: o.status });
   await setOrderStatus(req.params.id, 'cancelled', 'cancelled by buyer');
   await refundPay(req.params.id);
   emit('order.updated', { orderId: req.params.id, status: 'cancelled' }, req.params.id);
@@ -334,9 +316,8 @@ app.post<{ Params: { id: string } }>('/api/orders/:id/pay', async (req, reply) =
   if (!ok(req, reply, undefined, req.params.id, 'order id')) return;
   const parsed = paySchema.safeParse(req.body);
   if (!parsed.success) return badBody(reply, parsed.error.issues);
-  const r = await q('SELECT id, total, status FROM orders WHERE id = $1', [req.params.id]);
-  if (r.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
-  const order = r.rows[0] as { total: number; status: string };
+  const order = await one<{ total: number; status: string }>('SELECT id, total, status FROM orders WHERE id = $1', [req.params.id]);
+  if (!order) return reply.code(404).send({ error: 'order_not_found' });
   const ref = `MOCK-${Date.now().toString(36).toUpperCase()}`;
   await q(`INSERT INTO payments (order_id, method, amount, status, ref_code) VALUES ($1,$2,$3,'succeeded',$4) ON CONFLICT (order_id) DO UPDATE SET method = EXCLUDED.method, amount = EXCLUDED.amount, status = 'succeeded', ref_code = EXCLUDED.ref_code`, [req.params.id, parsed.data.method, order.total, ref]);
   await q("UPDATE orders SET payment_method = $2, payment_status = 'paid' WHERE id = $1", [req.params.id, parsed.data.method]);
@@ -348,9 +329,8 @@ app.post<{ Params: { id: string } }>('/api/orders/:id/review', async (req, reply
   if (!ok(req, reply, undefined, req.params.id, 'order id')) return;
   const parsed = reviewSchema.safeParse(req.body);
   if (!parsed.success) return badBody(reply, parsed.error.issues);
-  const r = await q('SELECT id, buyer_id, store_id FROM orders WHERE id = $1', [req.params.id]);
-  if (r.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
-  const order = r.rows[0] as { id: string; buyer_id: string; store_id: string };
+  const order = await one<{ id: string; buyer_id: string; store_id: string }>('SELECT id, buyer_id, store_id FROM orders WHERE id = $1', [req.params.id]);
+  if (!order) return reply.code(404).send({ error: 'order_not_found' });
   let storeId: string | null = order.store_id, riderId: string | null = null;
   if (parsed.data.target === 'rider') {
     const rider = await latestAcceptedRider(order.id);
@@ -383,9 +363,8 @@ app.patch<{ Params: { id: string } }>('/api/store/orders/:id', async (req, reply
   const parsed = storeActionSchema.safeParse(req.body);
   if (!parsed.success) return badBody(reply, parsed.error.issues);
   const { storeIds } = await resolveOwnerStoreIds((req.query as { ownerEmail?: string }).ownerEmail);
-  const r = await q('SELECT id, store_id, status FROM orders WHERE id = $1', [req.params.id]);
-  if (r.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
-  const order = r.rows[0] as { id: string; store_id: string; status: string };
+  const order = await one<{ id: string; store_id: string; status: string }>('SELECT id, store_id, status FROM orders WHERE id = $1', [req.params.id]);
+  if (!order) return reply.code(404).send({ error: 'order_not_found' });
   if (!storeIds.includes(order.store_id)) return reply.code(404).send({ error: 'order_not_found' });
   const next = STORE_NEXT[parsed.data.action]?.[order.status] ?? null;
   if (!next) return reply.code(409).send({ error: 'invalid_transition', from: order.status, action: parsed.data.action });
@@ -413,9 +392,8 @@ app.patch<{ Params: { id: string } }>('/api/menu-items/:id', async (req, reply) 
   if (parsed.data.is_available === undefined && parsed.data.price === undefined)
     return reply.code(400).send({ error: 'nothing_to_update' });
   const { storeIds } = await resolveOwnerStoreIds((req.query as { ownerEmail?: string }).ownerEmail);
-  const r = await q('SELECT * FROM menu_items WHERE id = $1', [req.params.id]);
-  if (r.rowCount === 0) return reply.code(404).send({ error: 'menu_item_not_found' });
-  if (!storeIds.includes((r.rows[0] as { store_id: string }).store_id)) return reply.code(404).send({ error: 'menu_item_not_found' });
+  const item = await one<{ store_id: string }>('SELECT * FROM menu_items WHERE id = $1', [req.params.id]);
+  if (!item || !storeIds.includes(item.store_id)) return reply.code(404).send({ error: 'menu_item_not_found' });
   const sets: string[] = [], params: unknown[] = [];
   if (parsed.data.is_available !== undefined) {
     params.push(parsed.data.is_available);
@@ -433,9 +411,8 @@ app.patch<{ Params: { id: string } }>('/api/menu-items/:id', async (req, reply) 
 // --- dispatch / rider (persona: rider) ------------------------------------------
 app.post<{ Params: { id: string } }>('/api/offers/:id/accept', async (req, reply) => {
   if (!ok(req, reply, ['rider'], req.params.id, 'offer id')) return;
-  const r = await q('SELECT * FROM offers WHERE id = $1', [req.params.id]);
-  if (r.rowCount === 0) return reply.code(404).send({ error: 'offer_not_found' });
-  const offer = r.rows[0] as { id: string; order_id: string; rider_id: string; status: string; expires_at: string | null };
+  const offer = await one<{ id: string; order_id: string; rider_id: string; status: string; expires_at: string | null }>('SELECT * FROM offers WHERE id = $1', [req.params.id]);
+  if (!offer) return reply.code(404).send({ error: 'offer_not_found' });
   if (offer.status !== 'offered') return reply.code(409).send({ error: 'offer_not_live', status: offer.status });
   if (offer.expires_at && new Date(offer.expires_at).getTime() < Date.now()) {
     await q("UPDATE offers SET status = 'expired' WHERE id = $1 AND status = 'offered'", [offer.id]);
@@ -455,9 +432,8 @@ app.post<{ Params: { id: string } }>('/api/offers/:id/accept', async (req, reply
 });
 app.post<{ Params: { id: string } }>('/api/offers/:id/decline', async (req, reply) => {
   if (!ok(req, reply, ['rider'], req.params.id, 'offer id')) return;
-  const r = await q('SELECT * FROM offers WHERE id = $1', [req.params.id]);
-  if (r.rowCount === 0) return reply.code(404).send({ error: 'offer_not_found' });
-  const offer = r.rows[0] as { id: string; order_id: string; status: string };
+  const offer = await one<{ id: string; order_id: string; status: string }>('SELECT * FROM offers WHERE id = $1', [req.params.id]);
+  if (!offer) return reply.code(404).send({ error: 'offer_not_found' });
   if (offer.status !== 'offered') return reply.code(409).send({ error: 'offer_not_live', status: offer.status });
   await q("UPDATE offers SET status = 'declined' WHERE id = $1", [offer.id]);
   const o = await q('SELECT status FROM orders WHERE id = $1', [offer.order_id]);
@@ -482,9 +458,8 @@ app.post<{ Params: { id: string } }>('/api/orders/:id/pickup', async (req, reply
   if (!ok(req, reply, ['rider'], req.params.id, 'order id')) return;
   const parsed = pickupSchema.safeParse(req.body);
   if (!parsed.success) return badBody(reply, parsed.error.issues);
-  const r = await q('SELECT id, status, pickup_pin FROM orders WHERE id = $1', [req.params.id]);
-  if (r.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
-  const order = r.rows[0] as { id: string; status: string; pickup_pin: string | null };
+  const order = await one<{ id: string; status: string; pickup_pin: string | null }>('SELECT id, status, pickup_pin FROM orders WHERE id = $1', [req.params.id]);
+  if (!order) return reply.code(404).send({ error: 'order_not_found' });
   if (!PICKABLE.includes(order.status)) return reply.code(409).send({ error: 'not_ready_for_pickup', status: order.status });
   if ((order.pickup_pin ?? '') !== parsed.data.pin) return reply.code(400).send({ error: 'bad_pin' });
   await setOrderStatus(order.id, 'picked_up', 'picked up by rider');
@@ -493,9 +468,8 @@ app.post<{ Params: { id: string } }>('/api/orders/:id/pickup', async (req, reply
 });
 app.post<{ Params: { id: string } }>('/api/orders/:id/deliver', async (req, reply) => {
   if (!ok(req, reply, ['rider'], req.params.id, 'order id')) return;
-  const r = await q('SELECT id, status FROM orders WHERE id = $1', [req.params.id]);
-  if (r.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
-  const order = r.rows[0] as { id: string; status: string };
+  const order = await one<{ id: string; status: string }>('SELECT id, status FROM orders WHERE id = $1', [req.params.id]);
+  if (!order) return reply.code(404).send({ error: 'order_not_found' });
   if (!DELIVERABLE.includes(order.status)) return reply.code(409).send({ error: 'not_out_for_delivery', status: order.status });
   await setOrderStatus(order.id, 'delivered', 'delivered to buyer');
   const rider = await latestAcceptedRider(order.id);
@@ -508,8 +482,7 @@ app.post('/api/tracking', async (req, reply) => {
   if (!ok(req, reply, ['rider'])) return;
   const parsed = trackingSchema.safeParse(req.body);
   if (!parsed.success) return badBody(reply, parsed.error.issues);
-  const o = await q('SELECT id FROM orders WHERE id = $1', [parsed.data.orderId]);
-  if (o.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
+  if (!(await one('SELECT id FROM orders WHERE id = $1', [parsed.data.orderId]))) return reply.code(404).send({ error: 'order_not_found' });
   const rider = await latestAcceptedRider(parsed.data.orderId);
   const ins = await q(`INSERT INTO delivery_tracking (order_id, rider_id, geom, heading) VALUES ($1, $2, ST_GeogFromText('SRID=4326;POINT(' || $3 || ' ' || $4 || ')'), $5) RETURNING id, at`, [parsed.data.orderId, rider?.id ?? null, String(parsed.data.lng), String(parsed.data.lat), parsed.data.heading ?? null]);
   emit('tracking.point', { orderId: parsed.data.orderId, lat: parsed.data.lat, lng: parsed.data.lng, heading: parsed.data.heading ?? null }, parsed.data.orderId);
@@ -517,8 +490,7 @@ app.post('/api/tracking', async (req, reply) => {
 });
 app.get<{ Params: { id: string } }>('/api/orders/:id/tracking', async (req, reply) => {
   if (!ok(req, reply, undefined, req.params.id, 'order id')) return;
-  const o = await q('SELECT id FROM orders WHERE id = $1', [req.params.id]);
-  if (o.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
+  if (!(await one('SELECT id FROM orders WHERE id = $1', [req.params.id]))) return reply.code(404).send({ error: 'order_not_found' });
   const r = await q(`SELECT ST_Y(geom::geometry) AS lat, ST_X(geom::geometry) AS lng, heading, speed, at FROM delivery_tracking WHERE order_id = $1 ORDER BY at ASC LIMIT 500`, [req.params.id]);
   return { orderId: req.params.id, points: r.rows };
 });
@@ -527,9 +499,7 @@ app.get('/api/rider/offers', async (req, reply) => {
   const riderId = await resolveRiderId(req.query);
   if (!riderId) return reply.code(404).send({ error: 'rider_not_found' });
   const r = await q(
-    `SELECT ofr.id, ofr.order_id, ofr.status, ofr.expires_at, o.total, o.created_at, s.name AS store_name, s.delivery_fee FROM offers ofr JOIN orders o ON o.id = ofr.order_id JOIN stores s ON s.id = o.store_id WHERE ofr.rider_id = $1 AND ofr.status = 'offered' AND ofr.expires_at > now() ORDER BY ofr.created_at DESC`,
-    [riderId],
-  );
+    `SELECT ofr.id, ofr.order_id, ofr.status, ofr.expires_at, o.total, o.created_at, s.name AS store_name, s.delivery_fee FROM offers ofr JOIN orders o ON o.id = ofr.order_id JOIN stores s ON s.id = o.store_id WHERE ofr.rider_id = $1 AND ofr.status = 'offered' AND ofr.expires_at > now() ORDER BY ofr.created_at DESC`, [riderId]);
   return { riderId, offers: r.rows };
 });
 app.get('/api/rider/active', async (req, reply) => {
@@ -537,9 +507,7 @@ app.get('/api/rider/active', async (req, reply) => {
   const riderId = await resolveRiderId(req.query);
   if (!riderId) return reply.code(404).send({ error: 'rider_not_found' });
   const r = await q(
-    `SELECT o.id FROM orders o JOIN offers ofr ON ofr.order_id = o.id WHERE ofr.rider_id = $1 AND ofr.status = 'accepted' AND o.status IN ('rider_assigned','picked_up','delivering') ORDER BY o.created_at DESC LIMIT 1`,
-    [riderId],
-  );
+    `SELECT o.id FROM orders o JOIN offers ofr ON ofr.order_id = o.id WHERE ofr.rider_id = $1 AND ofr.status = 'accepted' AND o.status IN ('rider_assigned','picked_up','delivering') ORDER BY o.created_at DESC LIMIT 1`, [riderId]);
   if ((r.rowCount ?? 0) === 0) return { riderId, order: null };
   return { riderId, order: await getOrderFull((r.rows[0] as { id: string }).id) };
 });
@@ -558,15 +526,14 @@ app.post('/api/ops/assign', async (req, reply) => {
   if (!ok(req, reply, ['operator', 'support'])) return;
   const parsed = assignSchema.safeParse(req.body);
   if (!parsed.success) return badBody(reply, parsed.error.issues);
-  const o = await q('SELECT id, status FROM orders WHERE id = $1', [parsed.data.orderId]);
-  if (o.rowCount === 0) return reply.code(404).send({ error: 'order_not_found' });
-  const status = (o.rows[0] as { status: string }).status;
-  if (CLOSED.includes(status)) return reply.code(409).send({ error: 'order_closed', status });
-  const u = await q("SELECT id, name FROM users WHERE id = $1 AND role = 'rider'", [parsed.data.riderId]);
-  if (u.rowCount === 0) return reply.code(404).send({ error: 'rider_not_found' });
+  const o = await one<{ status: string }>('SELECT id, status FROM orders WHERE id = $1', [parsed.data.orderId]);
+  if (!o) return reply.code(404).send({ error: 'order_not_found' });
+  if (CLOSED.includes(o.status)) return reply.code(409).send({ error: 'order_closed', status: o.status });
+  const u = await one<{ name: string }>("SELECT id, name FROM users WHERE id = $1 AND role = 'rider'", [parsed.data.riderId]);
+  if (!u) return reply.code(404).send({ error: 'rider_not_found' });
   await q("UPDATE offers SET status = 'expired' WHERE order_id = $1 AND status = 'offered'", [parsed.data.orderId]);
   const off = await q(`INSERT INTO offers (order_id, rider_id, status) VALUES ($1,$2,'accepted') RETURNING *`, [parsed.data.orderId, parsed.data.riderId]);
-  await setOrderStatus(parsed.data.orderId, 'rider_assigned', `force-assigned to ${(u.rows[0] as { name: string }).name} by ops`);
+  await setOrderStatus(parsed.data.orderId, 'rider_assigned', `force-assigned to ${u.name} by ops`);
   await q("UPDATE rider_profiles SET status = 'busy', updated_at = now() WHERE user_id = $1", [parsed.data.riderId]);
   emit('offer.created', off.rows[0], parsed.data.orderId);
   emit('order.updated', { orderId: parsed.data.orderId, status: 'rider_assigned' }, parsed.data.orderId);
@@ -591,8 +558,7 @@ app.post('/api/ops/promos', async (req, reply) => {
   const parsed = promoCreateSchema.safeParse(req.body);
   if (!parsed.success) return badBody(reply, parsed.error.issues);
   const code = parsed.data.code.toUpperCase();
-  if (((await q('SELECT code FROM promotions WHERE code = $1', [code])).rowCount ?? 0) > 0)
-    return reply.code(409).send({ error: 'promo_exists' });
+  if (await one('SELECT code FROM promotions WHERE code = $1', [code])) return reply.code(409).send({ error: 'promo_exists' });
   const ins = await q(`INSERT INTO promotions (code, kind, value, max_discount, min_order, active) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [code, parsed.data.kind, parsed.data.value, parsed.data.max_discount ?? null, parsed.data.min_order, parsed.data.active]);
   return reply.code(201).send({ promo: ins.rows[0] });
 });
@@ -648,9 +614,8 @@ app.post<{ Params: { id: string } }>('/api/tickets/:id/resolve', async (req, rep
 });
 app.post<{ Params: { id: string } }>('/api/tickets/:id/refund', async (req, reply) => {
   if (!ok(req, reply, undefined, req.params.id, 'ticket id')) return;
-  const t = await q('SELECT * FROM tickets WHERE id = $1', [req.params.id]);
-  if (t.rowCount === 0) return reply.code(404).send({ error: 'ticket_not_found' });
-  const ticket = t.rows[0] as { id: string; order_id: string | null };
+  const ticket = await one<{ id: string; order_id: string | null }>('SELECT * FROM tickets WHERE id = $1', [req.params.id]);
+  if (!ticket) return reply.code(404).send({ error: 'ticket_not_found' });
   if (!ticket.order_id) return reply.code(400).send({ error: 'ticket_has_no_order' });
   await refundPay(ticket.order_id);
   const o = await q('SELECT status FROM orders WHERE id = $1', [ticket.order_id]);
