@@ -62,13 +62,14 @@ function ShellHeader() {
   );
 }
 
+const STATUS_DOT: Record<'ok' | 'error' | 'loading', string> = {
+  ok: 'bg-emerald-500',
+  error: 'bg-red-500',
+  loading: 'bg-amber-400 animate-pulse',
+};
+
 function StatusDot({ state }: { state: 'ok' | 'error' | 'loading' }) {
-  const color =
-    state === 'ok'
-      ? 'bg-emerald-500'
-      : state === 'error'
-        ? 'bg-red-500'
-        : 'bg-amber-400 animate-pulse';
+  const color = STATUS_DOT[state];
   return <span className={`inline-block h-2.5 w-2.5 rounded-full ${color}`} />;
 }
 
