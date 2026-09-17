@@ -63,8 +63,8 @@ export default function BrowsePage() {
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return stores
-      .filter((s) => (cuisine !== 'All' && s.cuisine !== cuisine ? false : needle === '' ? true
-        : s.name.toLowerCase().includes(needle) || s.cuisine.toLowerCase().includes(needle)))
+      .filter((s) => (cuisine === 'All' || s.cuisine === cuisine)
+        && (needle === '' || s.name.toLowerCase().includes(needle) || s.cuisine.toLowerCase().includes(needle)))
       .sort(SORTERS[sort]);
   }, [stores, query, cuisine, sort]);
   const count = cartCount(lines);
