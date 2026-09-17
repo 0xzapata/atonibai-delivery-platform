@@ -13,26 +13,6 @@ import { riderRoutes } from './pages/rider/routes';
 import { opsRoutes } from './pages/ops/routes';
 import { supportRoutes } from './pages/support/routes';
 
-function BuyerSection() {
-  return useRoutes(buyerRoutes);
-}
-
-function StoreSection() {
-  return useRoutes(storeRoutes);
-}
-
-function RiderSection() {
-  return useRoutes(riderRoutes);
-}
-
-function OpsSection() {
-  return useRoutes(opsRoutes);
-}
-
-function SupportSection() {
-  return useRoutes(supportRoutes);
-}
-
 function ShellHeader() {
   return (
     <header className="glass sticky top-0 z-10 border-b border-stone-200">
@@ -62,13 +42,14 @@ function ShellHeader() {
   );
 }
 
+const STATUS_DOT: Record<'ok' | 'error' | 'loading', string> = {
+  ok: 'bg-emerald-500',
+  error: 'bg-red-500',
+  loading: 'bg-amber-400 animate-pulse',
+};
+
 function StatusDot({ state }: { state: 'ok' | 'error' | 'loading' }) {
-  const color =
-    state === 'ok'
-      ? 'bg-emerald-500'
-      : state === 'error'
-        ? 'bg-red-500'
-        : 'bg-amber-400 animate-pulse';
+  const color = STATUS_DOT[state];
   return <span className={`inline-block h-2.5 w-2.5 rounded-full ${color}`} />;
 }
 
@@ -200,20 +181,22 @@ function NotFoundPage() {
 }
 
 export default function App() {
+  const buyer = useRoutes(buyerRoutes);
+  const store = useRoutes(storeRoutes);
+  const rider = useRoutes(riderRoutes);
+  const ops = useRoutes(opsRoutes);
+  const support = useRoutes(supportRoutes);
   return (
     <div className="min-h-screen">
       <ShellHeader />
       <main className="mx-auto w-full max-w-6xl px-4 py-6 sm:py-8">
         <Routes>
           <Route path="/" element={<HomePage />} />
-          <Route path="/buyer/*" element={<BuyerSection />} />
-          <Route path="/store/*" element={<StoreSection />} />
-          <Route path="/rider/*" element={<RiderSection />} />
-          <Route path="/ops/*" element={<OpsSection />} />
-          <Route path="/support/*" element={<SupportSection />} />
-          <Route path="/rider/*" element={<RiderSection />} />
-          <Route path="/ops/*" element={<OpsSection />} />
-          <Route path="/support/*" element={<SupportSection />} />
+          <Route path="/buyer/*" element={buyer} />
+          <Route path="/store/*" element={store} />
+          <Route path="/rider/*" element={rider} />
+          <Route path="/ops/*" element={ops} />
+          <Route path="/support/*" element={support} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </main>

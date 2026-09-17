@@ -1,4 +1,6 @@
 import type { StoresPayload } from '../../lib/api';
+import { asRecord } from '../../lib/api';
+export { asRecord };
 
 export interface Store { id: string; name: string; cuisine: string; image: string | null; rating: number | null; delivery_fee: number | null; is_open: boolean | null; lat: number | null; lng: number | null; }
 export interface MenuChoice { id: string; name: string; price_delta: number; }
@@ -9,8 +11,6 @@ export interface OrderInfo { id: string; status: string; total: number | null; s
 export interface StoreLite { id: string; name: string; lat: number | null; lng: number | null; image: string | null; }
 export interface TimelineEntry { label: string; at: string | null; }
 
-export const asRecord = (v: unknown): Record<string, unknown> =>
-  typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
 const asNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const asStr = (v: unknown): string | null =>
   typeof v === 'string' ? v : v === null || v === undefined ? null

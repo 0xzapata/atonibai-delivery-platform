@@ -9,29 +9,9 @@ export const OWNER_EMAIL = 'owner1@example.com';
 export const STORE_ID_STORAGE_KEY = 'kaoncdo:storeId';
 const STORE_PERSONA_HEADERS: HeadersInit = { 'x-persona': 'store_owner' };
 
-// Shared low-level helpers (also used by support via relative import).
-export function asRecord(v: unknown): Record<string, unknown> {
-  return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
-}
-export function toStr(v: unknown): string | null {
-  if (typeof v === 'string' && v !== '') return v;
-  if (typeof v === 'number') return String(v);
-  return null;
-}
-export function pickList<T>(payload: unknown, keys: string[]): T[] {
-  if (Array.isArray(payload)) return payload as T[];
-  const r = asRecord(payload);
-  for (const k of keys) if (Array.isArray(r[k])) return r[k] as T[];
-  return [];
-}
-export function firstObj(payload: unknown, keys: string[]): Record<string, unknown> | null {
-  const r = asRecord(payload);
-  for (const k of keys) {
-    const v = r[k];
-    if (v && typeof v === 'object') return v as Record<string, unknown>;
-  }
-  return null;
-}
+// Shared low-level helpers live in lib/api (support imports them via this re-export).
+import { asRecord, firstObj, pickList, toStr } from '../../lib/api';
+export { asRecord, firstObj, pickList, toStr };
 
 export function apiStoreGet<T>(path: string): Promise<T> {
   return api<T>(path, { method: 'GET', headers: STORE_PERSONA_HEADERS });

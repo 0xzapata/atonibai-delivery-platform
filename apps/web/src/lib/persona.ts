@@ -36,13 +36,7 @@ export const PERSONAS: PersonaMeta[] = [
 const DEFAULT_PERSONA: Persona = 'buyer';
 
 function isPersona(value: string | null): value is Persona {
-  return (
-    value === 'buyer' ||
-    value === 'store_owner' ||
-    value === 'rider' ||
-    value === 'operator' ||
-    value === 'support'
-  );
+  return PERSONAS.some((p) => p.id === value);
 }
 
 export function getStoredPersona(): Persona {
