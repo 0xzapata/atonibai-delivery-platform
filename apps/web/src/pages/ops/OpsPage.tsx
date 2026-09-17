@@ -1,5 +1,5 @@
 import 'leaflet/dist/leaflet.css';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import L from 'leaflet';
 import { MapContainer, Marker, TileLayer } from 'react-leaflet';
@@ -211,6 +211,18 @@ function BroadcastBox() {
 
 const PROMO_KINDS = ['percent', 'flat', 'freeship'] as const;
 
+type PromoView = 'loading' | 'error' | 'empty' | 'list';
+
+function promoView(
+  q: { isPending: boolean; isError: boolean },
+  count: number,
+): PromoView {
+  if (q.isPending) return 'loading';
+  if (q.isError) return 'error';
+  if (count === 0) return 'empty';
+  return 'list';
+}
+
 function PromosCard() {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -261,53 +273,55 @@ function PromosCard() {
     }
   }
 
+  const promos = promosQuery.data ?? [];
+  const view = promoView(promosQuery, promos.length);
+  const PROMO_BODY: Record<PromoView, ReactNode> = {
+    loading: <p className="text-sm font-semibold text-stone-500">Loading promos…</p>,
+    error: (
+      <ErrorState
+        message="Promos unavailable — is the API running at localhost:3001?"
+        onRetry={() => void promosQuery.refetch()}
+      />
+    ),
+    empty: <EmptyState message="No promos yet — create the first one below." />,
+    list: (
+      <ul className="space-y-1.5">
+        {promos.map((p) => (
+          <li
+            key={String(p.id ?? p.code)}
+            className="flex flex-wrap items-center gap-2 rounded-xl bg-stone-50 px-3 py-2 text-sm"
+          >
+            <span className="font-extrabold tracking-wide">{p.code}</span>
+            <span className="rounded-full bg-stone-200 px-2 py-0.5 text-[11px] font-bold text-stone-600">
+              {p.kind} · {p.value}
+            </span>
+            {p.min_order ? (
+              <span className="text-xs font-semibold text-stone-500">
+                min {formatPeso(p.min_order)}
+              </span>
+            ) : null}
+            {p.max_discount ? (
+              <span className="text-xs font-semibold text-stone-500">
+                cap {formatPeso(p.max_discount)}
+              </span>
+            ) : null}
+            <span
+              className={`ml-auto rounded-full px-2 py-0.5 text-[11px] font-extrabold ${
+                p.active ? 'bg-emerald-100 text-emerald-800' : 'bg-stone-200 text-stone-500'
+              }`}
+            >
+              {p.active ? 'active' : 'off'}
+            </span>
+          </li>
+        ))}
+      </ul>
+    ),
+  };
+
   return (
     <section className="card space-y-3 p-4">
       <h2 className="text-sm font-extrabold">Promos</h2>
-      {promosQuery.isPending && (
-        <p className="text-sm font-semibold text-stone-500">Loading promos…</p>
-      )}
-      {promosQuery.isError && (
-        <ErrorState
-          message="Promos unavailable — is the API running at localhost:3001?"
-          onRetry={() => void promosQuery.refetch()}
-        />
-      )}
-      {promosQuery.isSuccess && (promosQuery.data ?? []).length === 0 && (
-        <EmptyState message="No promos yet — create the first one below." />
-      )}
-      {promosQuery.isSuccess && (promosQuery.data ?? []).length > 0 && (
-        <ul className="space-y-1.5">
-          {(promosQuery.data ?? []).map((p) => (
-            <li
-              key={String(p.id ?? p.code)}
-              className="flex flex-wrap items-center gap-2 rounded-xl bg-stone-50 px-3 py-2 text-sm"
-            >
-              <span className="font-extrabold tracking-wide">{p.code}</span>
-              <span className="rounded-full bg-stone-200 px-2 py-0.5 text-[11px] font-bold text-stone-600">
-                {p.kind} · {p.value}
-              </span>
-              {p.min_order ? (
-                <span className="text-xs font-semibold text-stone-500">
-                  min {formatPeso(p.min_order)}
-                </span>
-              ) : null}
-              {p.max_discount ? (
-                <span className="text-xs font-semibold text-stone-500">
-                  cap {formatPeso(p.max_discount)}
-                </span>
-              ) : null}
-              <span
-                className={`ml-auto rounded-full px-2 py-0.5 text-[11px] font-extrabold ${
-                  p.active ? 'bg-emerald-100 text-emerald-800' : 'bg-stone-200 text-stone-500'
-                }`}
-              >
-                {p.active ? 'active' : 'off'}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+      {PROMO_BODY[view]}
       <div className="grid grid-cols-2 gap-2 border-t border-stone-100 pt-3">
         <label className="col-span-1 text-xs font-bold">
           Code
@@ -379,6 +393,129 @@ function PromosCard() {
       >
         {sending ? 'Creating…' : 'Create promo'}
       </button>
+    </section>
+  );
+}
+
+// ---------- live map + orders panel (extracted from the god inner) ----------
+
+const LEGEND: Array<{ key: string; swatch: ReactNode; label: string }> = [
+  {
+    key: 'online',
+    swatch: <span className="h-2.5 w-2.5 rounded-full" style={{ background: '#00b14f' }} />,
+    label: 'online',
+  },
+  {
+    key: 'busy',
+    swatch: <span className="h-2.5 w-2.5 rounded-full" style={{ background: '#2563eb' }} />,
+    label: 'busy',
+  },
+  {
+    key: 'store',
+    swatch: <span className="rounded bg-orange-600 px-1.5 py-0.5 text-[10px] text-white">⌂</span>,
+    label: 'active-order store',
+  },
+];
+
+function LiveMap({
+  riders,
+  storePins,
+  isFetching,
+}: {
+  riders: LiveRider[];
+  storePins: Array<{ key: string; name: string; lat: number; lng: number }>;
+  isFetching: boolean;
+}) {
+  return (
+    <section className="card overflow-hidden">
+      <div className="h-[320px] w-full sm:h-[440px]">
+        <MapContainer
+          center={CENTER}
+          zoom={13}
+          scrollWheelZoom={false}
+          style={{ height: '100%', width: '100%' }}
+        >
+          <TileLayer url={ESRI_TILES} attribution={ESRI_ATTR} />
+          {riders.map((r) => (
+            <Marker
+              key={r.id}
+              position={[r.lat as number, r.lng as number]}
+              icon={riderIcon(r)}
+            />
+          ))}
+          {storePins.map((p) => (
+            <Marker key={p.key} position={[p.lat, p.lng]} icon={storeIcon(p.name)} />
+          ))}
+        </MapContainer>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-stone-100 px-4 py-2 text-[11px] font-bold text-stone-500">
+        {LEGEND.map((item) => (
+          <span key={item.key} className="inline-flex items-center gap-1.5">
+            {item.swatch} {item.label}
+          </span>
+        ))}
+        <span className="ml-auto font-semibold text-stone-400">
+          {isFetching ? 'updating…' : 'Esri WorldStreetMap'}
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function OrdersPanel({
+  orders,
+  isPending,
+  isSuccess,
+  onAssign,
+}: {
+  orders: LiveOrder[];
+  isPending: boolean;
+  isSuccess: boolean;
+  onAssign: (o: LiveOrder) => void;
+}) {
+  return (
+    <section className="card p-4">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-sm font-extrabold">
+          Active orders{' '}
+          <span className="ml-1 rounded-full bg-stone-100 px-2 py-0.5 text-xs font-bold text-stone-500">
+            {orders.length}
+          </span>
+        </h2>
+        {isPending && (
+          <span className="text-xs font-semibold text-stone-400">loading…</span>
+        )}
+      </div>
+      <div className="mt-2 max-h-80 space-y-2 overflow-y-auto pr-0.5">
+        {isPending && (
+          <p className="text-sm font-semibold text-stone-500">Loading orders…</p>
+        )}
+        {isSuccess && orders.length === 0 && (
+          <EmptyState message="No active orders right now." />
+        )}
+        {orders.map((o) => (
+          <div
+            key={o.id}
+            className="flex flex-wrap items-center gap-2 rounded-xl bg-stone-50 px-3 py-2"
+          >
+            <span className="text-sm font-extrabold">#{shortId(o.id)}</span>
+            <StatusPill status={o.status} />
+            <span className="text-sm font-bold">
+              {o.total !== null ? formatPeso(o.total) : '—'}
+            </span>
+            <span className="w-full truncate text-xs font-semibold text-stone-500">
+              {o.store_name ?? '—'} → {o.buyer_name ?? '—'}
+            </span>
+            <button
+              type="button"
+              onClick={() => onAssign(o)}
+              className="ml-auto rounded-full bg-stone-900 px-3 py-1 text-xs font-bold text-white"
+            >
+              Assign
+            </button>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -459,88 +596,10 @@ function OpsPageInner() {
 
       {/* Map stacks above the panel on mobile; side-by-side on xl. */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.4fr_1fr]">
-        <section className="card overflow-hidden">
-          <div className="h-[320px] w-full sm:h-[440px]">
-            <MapContainer
-              center={CENTER}
-              zoom={13}
-              scrollWheelZoom={false}
-              style={{ height: '100%', width: '100%' }}
-            >
-              <TileLayer url={ESRI_TILES} attribution={ESRI_ATTR} />
-              {geoRiders.map((r) => (
-                <Marker
-                  key={r.id}
-                  position={[r.lat as number, r.lng as number]}
-                  icon={riderIcon(r)}
-                />
-              ))}
-              {storePins.map((p) => (
-                <Marker key={p.key} position={[p.lat, p.lng]} icon={storeIcon(p.name)} />
-              ))}
-            </MapContainer>
-          </div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-stone-100 px-4 py-2 text-[11px] font-bold text-stone-500">
-            <span className="inline-flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full" style={{ background: '#00b14f' }} /> online
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full" style={{ background: '#2563eb' }} /> busy
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span className="rounded bg-orange-600 px-1.5 py-0.5 text-[10px] text-white">⌂</span> active-order store
-            </span>
-            <span className="ml-auto font-semibold text-stone-400">
-              {liveQuery.isFetching ? 'updating…' : 'Esri WorldStreetMap'}
-            </span>
-          </div>
-        </section>
+        <LiveMap riders={geoRiders} storePins={storePins} isFetching={liveQuery.isFetching} />
 
         <div className="space-y-4">
-          <section className="card p-4">
-            <div className="flex items-baseline justify-between">
-              <h2 className="text-sm font-extrabold">
-                Active orders{' '}
-                <span className="ml-1 rounded-full bg-stone-100 px-2 py-0.5 text-xs font-bold text-stone-500">
-                  {orders.length}
-                </span>
-              </h2>
-              {liveQuery.isPending && (
-                <span className="text-xs font-semibold text-stone-400">loading…</span>
-              )}
-            </div>
-            <div className="mt-2 max-h-80 space-y-2 overflow-y-auto pr-0.5">
-              {liveQuery.isPending && (
-                <p className="text-sm font-semibold text-stone-500">Loading orders…</p>
-              )}
-              {liveQuery.isSuccess && orders.length === 0 && (
-                <EmptyState message="No active orders right now." />
-              )}
-              {orders.map((o) => (
-                <div
-                  key={o.id}
-                  className="flex flex-wrap items-center gap-2 rounded-xl bg-stone-50 px-3 py-2"
-                >
-                  <span className="text-sm font-extrabold">#{shortId(o.id)}</span>
-                  <StatusPill status={o.status} />
-                  <span className="text-sm font-bold">
-                    {o.total !== null ? formatPeso(o.total) : '—'}
-                  </span>
-                  <span className="w-full truncate text-xs font-semibold text-stone-500">
-                    {o.store_name ?? '—'} → {o.buyer_name ?? '—'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setAssignFor(o)}
-                    className="ml-auto rounded-full bg-stone-900 px-3 py-1 text-xs font-bold text-white"
-                  >
-                    Assign
-                  </button>
-                </div>
-              ))}
-            </div>
-          </section>
-
+          <OrdersPanel orders={orders} isPending={liveQuery.isPending} isSuccess={liveQuery.isSuccess} onAssign={setAssignFor} />
           <BroadcastBox />
           <PromosCard />
         </div>
