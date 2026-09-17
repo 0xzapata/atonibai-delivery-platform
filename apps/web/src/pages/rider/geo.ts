@@ -1,15 +1,12 @@
-// Rider-local route helpers (duplicated from buyer geo so this persona stays
-// self-contained): OSRM driving route with straight-line fallback.
 export async function fetchRoute(
   fromLng: number,
   fromLat: number,
   toLng: number,
   toLat: number,
 ): Promise<Array<[number, number]> | null> {
-  const url =
-    `https://router.project-osrm.org/route/v1/driving/` +
-    `${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson`;
-  const res = await fetch(url);
+  const res = await fetch(
+    `https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson`,
+  );
   if (!res.ok) return null;
   const data = (await res.json()) as {
     routes?: Array<{ geometry?: { coordinates?: Array<[number, number]> } }>;
@@ -19,19 +16,12 @@ export async function fetchRoute(
   return coords.map(([lng, lat]) => [lat, lng] as [number, number]);
 }
 
-/** Compass bearing in degrees from a -> b (for the car marker + tracking pings). */
-export function bearingDeg(
-  aLat: number,
-  aLng: number,
-  bLat: number,
-  bLng: number,
-): number {
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const toDeg = (r: number) => (r * 180) / Math.PI;
-  const dLng = toRad(bLng - aLng);
-  const y = Math.sin(dLng) * Math.cos(toRad(bLat));
+export function bearingDeg(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLng = rad(bLng - aLng);
+  const y = Math.sin(dLng) * Math.cos(rad(bLat));
   const x =
-    Math.cos(toRad(aLat)) * Math.sin(toRad(bLat)) -
-    Math.sin(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.cos(dLng);
-  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+    Math.cos(rad(aLat)) * Math.sin(rad(bLat)) -
+    Math.sin(rad(aLat)) * Math.cos(rad(bLat)) * Math.cos(dLng);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }

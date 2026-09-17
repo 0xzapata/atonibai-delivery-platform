@@ -1,36 +1,10 @@
-// Rider-local toast (zustand-backed, same pattern as buyer but scoped here).
 import { create } from 'zustand';
 
 export type ToastKind = 'ok' | 'err' | 'info';
-
 export interface ToastItem {
   id: number;
   message: string;
   kind: ToastKind;
-}
-
-interface ToastState {
-  items: ToastItem[];
-  push: (message: string, kind?: ToastKind) => void;
-  dismiss: (id: number) => void;
-}
-
-let nextId = 1;
-
-export const useToasts = create<ToastState>()((set) => ({
-  items: [],
-  push: (message, kind = 'info') => {
-    const id = nextId++;
-    set((s) => ({ items: [...s.items.slice(-2), { id, message, kind }] }));
-    window.setTimeout(() => {
-      set((s) => ({ items: s.items.filter((t) => t.id !== id) }));
-    }, 2800);
-  },
-  dismiss: (id) => set((s) => ({ items: s.items.filter((t) => t.id !== id) })),
-}));
-
-export function toast(message: string, kind: ToastKind = 'info'): void {
-  useToasts.getState().push(message, kind);
 }
 
 const KIND_STYLES: Record<ToastKind, string> = {
@@ -38,6 +12,26 @@ const KIND_STYLES: Record<ToastKind, string> = {
   err: 'bg-red-600 text-white',
   info: 'bg-stone-900 text-white',
 };
+
+let nextId = 1;
+
+export const useToasts = create<{
+  items: ToastItem[];
+  push: (message: string, kind?: ToastKind) => void;
+  dismiss: (id: number) => void;
+}>()((set) => ({
+  items: [],
+  push: (message, kind = 'info') => {
+    const id = nextId++;
+    set((s) => ({ items: [...s.items.slice(-2), { id, message, kind }] }));
+    window.setTimeout(() => set((s) => ({ items: s.items.filter((t) => t.id !== id) })), 2800);
+  },
+  dismiss: (id) => set((s) => ({ items: s.items.filter((t) => t.id !== id) })),
+}));
+
+export function toast(message: string, kind: ToastKind = 'info'): void {
+  useToasts.getState().push(message, kind);
+}
 
 export function Toaster() {
   const items = useToasts((s) => s.items);

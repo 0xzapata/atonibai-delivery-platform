@@ -1,5 +1,3 @@
-// Rider earnings: client-side only. Deliveries completed in this app session
-// are appended to localStorage; today's count + sum derive from that list.
 export interface DeliveredEntry {
   id: string;
   total: number;
@@ -8,15 +6,12 @@ export interface DeliveredEntry {
 
 const STORAGE_KEY = 'kaoncdo:rider:delivered:v1';
 
-/** Explainer shown under the earnings card (seed orders are never counted). */
 export const SEED_NOTE =
   'Demo seed orders are not counted — totals are computed on-device from deliveries you complete in this app.';
 
 export function loadDelivered(): DeliveredEntry[] {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null');
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(
       (e): e is DeliveredEntry =>
@@ -41,21 +36,17 @@ export function recordDelivered(id: string, total: number): DeliveredEntry[] {
   return next;
 }
 
-function isToday(at: number): boolean {
+const isToday = (at: number): boolean => {
   const d = new Date(at);
-  const now = new Date();
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
-}
+  const n = new Date();
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+};
 
 export function todayStats(entries: DeliveredEntry[]): { count: number; sum: number } {
   return entries
     .filter((e) => isToday(e.at))
     .reduce(
-      (acc, e) => ({ count: acc.count + 1, sum: acc.sum + (Number.isFinite(e.total) ? e.total : 0) }),
+      (a, e) => ({ count: a.count + 1, sum: a.sum + (Number.isFinite(e.total) ? e.total : 0) }),
       { count: 0, sum: 0 },
     );
 }
