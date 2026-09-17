@@ -16,6 +16,11 @@
 - Rider marker art: `apps/web/public/car.svg` (user-supplied top-down render,
   nose-up so `rotate(bearing)` steers it). Buyer track page uses a 36px static
   version; rider active page uses 48px rotating.
+- `agent-browser errors` aggregates ALL sessions/tabs, including stale ones
+  (a leftover CARTO signup tab once produced 2× `auth.carto.com` XHR errors on
+  every check). Before blaming app code: `agent-browser close --all`, reopen
+  only app pages, re-check `errors --json`. Zero code refs to carto/auth0 =
+  outside our code.
 
 ## Orchestration (what worked)
 

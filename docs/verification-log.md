@@ -30,10 +30,13 @@
    3 expired offers, source unidentified — pre-dates this pass; possibly a
    leftover from an earlier agent smoke test). Removed with dependents;
    baseline restored. Follow-up: none unless it recurs.
-2. **Third-party `auth.carto.com` XHR JSON.parse errors** (2× on every page,
-   via `--json errors`; plain `errors` output empty). Not app code; source
-   unidentified. Follow-up: find what issues that request (suspect a stale
-   service worker or extension-less headless artifact) and silence or remove it.
+2. **Third-party `auth.carto.com` XHR JSON.parse errors** — RESOLVED 2026-09-17
+   ~06:30 UTC, no code change: `grep` finds zero carto/auth0 refs in
+   `apps/`+`db/` (only this log + an AGENTS.md tile-provider note). After
+   `agent-browser close --all` + fresh session with only app pages open,
+   `errors --json` returns `[]`. Root cause was a stale CARTO signup tab in
+   the old browser session (`errors` aggregates all sessions). Gotcha added
+   to AGENTS.md.
 3. Buyer track view shows no rider marker until first tracking ping exists
    (caption still references a rider dot) — cosmetic copy mismatch. Follow-up.
 4. `agent-browser click` needs quoted `@refs` in PowerShell (`'@e3'`); `eval`
