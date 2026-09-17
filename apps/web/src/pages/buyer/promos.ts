@@ -4,16 +4,16 @@ export const KNOWN_PROMOS = ['KAON20', 'FREESHIP'] as const;
 
 const fail = (code: string, message: string): PromoEval => ({ code, discount: 0, freeDelivery: false, ok: false, message });
 
+const PROMOS: Record<string, { min: number; discount: (sub: number) => number; freeDelivery: boolean; message: string }> = {
+  KAON20: { min: 150, discount: (sub) => Math.min(100, Math.round(sub * 0.2)), freeDelivery: false, message: 'KAON20 applied: 20% off (capped at ₱100).' },
+  FREESHIP: { min: 200, discount: () => 0, freeDelivery: true, message: 'FREESHIP applied: delivery fee waived.' },
+};
+
 export function evaluatePromo(rawCode: string, subtotal: number): PromoEval {
   const code = rawCode.trim().toUpperCase();
   if (code === '') return { code: '', discount: 0, freeDelivery: false, ok: true, message: '' };
-  if (code === 'KAON20') {
-    if (subtotal < 150) return fail(code, 'KAON20 needs a minimum subtotal of \u20B1150.');
-    return { code, discount: Math.min(100, Math.round(subtotal * 0.2)), freeDelivery: false, ok: true, message: 'KAON20 applied: 20% off (capped at \u20B1100).' };
-  }
-  if (code === 'FREESHIP') {
-    if (subtotal < 200) return fail(code, 'FREESHIP needs a minimum subtotal of \u20B1200.');
-    return { code, discount: 0, freeDelivery: true, ok: true, message: 'FREESHIP applied: delivery fee waived.' };
-  }
-  return fail(code, `Unknown promo code "${code}". Try KAON20 or FREESHIP.`);
+  const spec = PROMOS[code];
+  if (!spec) return fail(code, `Unknown promo code "${code}". Try KAON20 or FREESHIP.`);
+  if (subtotal < spec.min) return fail(code, `${code} needs a minimum subtotal of ₱${spec.min}.`);
+  return { code, discount: spec.discount(subtotal), freeDelivery: spec.freeDelivery, ok: true, message: spec.message };
 }

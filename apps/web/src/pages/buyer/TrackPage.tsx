@@ -36,6 +36,21 @@ function Stars({ rating, setRating }: { rating: number; setRating: (n: number) =
   );
 }
 
+function TimelineRow({ label, at, last }: { label: string; at: string | null; last: boolean }) {
+  return (
+    <li className="flex gap-3">
+      <div className="flex flex-col items-center">
+        <span className={`mt-1 h-3 w-3 rounded-full ${last ? '' : 'bg-stone-300'}`} style={last ? ACCENT : undefined} />
+        {!last && <span className="w-0.5 flex-1 bg-stone-200" />}
+      </div>
+      <div className={`pb-4 ${last ? 'font-extrabold' : 'text-stone-600'}`}>
+        <p className="text-sm capitalize">{label.replace(/_/g, ' ')}</p>
+        {at && <p className="text-[11px] font-semibold text-stone-400">{at}</p>}
+      </div>
+    </li>
+  );
+}
+
 function ReviewForm({ orderId, onDone }: { orderId: string; onDone: () => void }) {
   const [rating, setRating] = useState(5);
   const [target, setTarget] = useState('store');
@@ -104,7 +119,7 @@ export default function TrackPage() {
     return () => { dead = true; };
   }, [hasGeo, sLat, sLng]);
 
-  const line: Array<[number, number]> = route?.length > 1 ? route
+  const line: Array<[number, number]> = route !== null && route.length > 1 ? route
     : hasGeo && sLat !== null && sLng !== null ? [[sLat, sLng], [CENTRIO_LAT, CENTRIO_LNG]] : [];
   const riderPos = tracking.length > 0 ? tracking[tracking.length - 1]! : null;
   const live = route !== null && route.length > 1;
@@ -172,16 +187,7 @@ export default function TrackPage() {
             <h2 className="text-sm font-extrabold">Status timeline</h2>
             <ol className="mt-3 space-y-0">
               {timeline.map((t, i) => (
-                <li key={`${t.label}-${i}`} className="flex gap-3">
-                  <div className="flex flex-col items-center">
-                    <span className={`mt-1 h-3 w-3 rounded-full ${i === timeline.length - 1 ? '' : 'bg-stone-300'}`} style={i === timeline.length - 1 ? ACCENT : undefined} />
-                    {i !== timeline.length - 1 && <span className="w-0.5 flex-1 bg-stone-200" />}
-                  </div>
-                  <div className={`pb-4 ${i === timeline.length - 1 ? 'font-extrabold' : 'text-stone-600'}`}>
-                    <p className="text-sm capitalize">{t.label.replace(/_/g, ' ')}</p>
-                    {t.at && <p className="text-[11px] font-semibold text-stone-400">{t.at}</p>}
-                  </div>
-                </li>
+                <TimelineRow key={`${t.label}-${i}`} label={t.label} at={t.at} last={i === timeline.length - 1} />
               ))}
             </ol>
           </div>

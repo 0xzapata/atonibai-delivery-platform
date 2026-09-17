@@ -15,8 +15,6 @@ export const mockEtaMin = (lat: number | null, lng: number | null): number => {
   return km === null ? 25 : Math.max(10, Math.round(12 + km * 4));
 };
 
-export interface OsrmPoint { lat: number; lng: number; }
-
 export async function fetchRoute(storeLng: number, storeLat: number, buyerLng: number, buyerLat: number): Promise<Array<[number, number]> | null> {
   const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${storeLng},${storeLat};${buyerLng},${buyerLat}?overview=full&geometries=geojson`);
   if (!res.ok) return null;

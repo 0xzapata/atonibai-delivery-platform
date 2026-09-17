@@ -107,11 +107,15 @@ export default function StorePage() {
   const categories = useMemo(() => normalizeMenu(mq.data), [mq.data]);
   const activeItem: MenuItem | null = useMemo(() => {
     if (!activeId) return null;
-    for (const c of categories) { const f = c.items.find((i) => i.id === activeId); if (f) return f; }
-    return null;
+    return categories.flatMap((c) => c.items).find((i) => i.id === activeId) ?? null;
   }, [categories, activeId]);
   const shown = catFilter ? categories.filter((c) => c.id === catFilter) : categories;
   const count = cartCount(lines);
+
+  function scrollToCat(catId: string) {
+    setCatFilter(null);
+    requestAnimationFrame(() => document.getElementById(`buyer-cat-${catId}`)?.scrollIntoView({ behavior: 'smooth' }));
+  }
 
   return (
     <div className="space-y-4">
@@ -141,7 +145,7 @@ export default function StorePage() {
           <div className="flex gap-2 overflow-x-auto pb-1">
             {[{ id: null as string | null, name: 'All' }, ...categories].map((c) => (
               <button key={c.id ?? 'all'} type="button"
-                onClick={() => (c.id === null ? setCatFilter(null) : (setCatFilter(null), requestAnimationFrame(() => document.getElementById(`buyer-cat-${c.id}`)?.scrollIntoView({ behavior: 'smooth' }))))}
+                onClick={() => (c.id === null ? setCatFilter(null) : scrollToCat(c.id))}
                 style={catFilter === c.id ? ACCENT : undefined}
                 className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-bold ${catFilter === c.id ? 'text-white' : 'bg-white text-stone-600 ring-1 ring-stone-200'}`}>
                 {c.name}
