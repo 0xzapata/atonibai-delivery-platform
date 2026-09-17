@@ -894,6 +894,49 @@ app.get<{ Params: { id: string } }>('/api/orders/:id/tracking', async (req, repl
   return { orderId: req.params.id, points: r.rows };
 });
 
+async function resolveRiderId(req: { query?: unknown }): Promise<string | null> {
+  const q = (req.query ?? {}) as { riderEmail?: string; riderId?: string };
+  if (q.riderId) return q.riderId;
+  if (q.riderEmail) {
+    const u = await pool.query("SELECT id FROM users WHERE email = $1 AND role = 'rider'", [q.riderEmail]);
+    if ((u.rowCount ?? 0) > 0) return (u.rows[0] as { id: string }).id;
+    return null;
+  }
+  const u = await pool.query("SELECT id FROM users WHERE role = 'rider' ORDER BY created_at ASC LIMIT 1");
+  return (u.rows[0] as { id: string }).id;
+}
+
+app.get('/api/rider/offers', async (req, reply) => {
+  if (!requirePersona(req, reply, ['rider'])) return;
+  const riderId = await resolveRiderId(req);
+  if (!riderId) return reply.code(404).send({ error: 'rider_not_found' });
+  const r = await pool.query(
+    `SELECT ofr.id, ofr.order_id, ofr.status, ofr.expires_at, o.total, o.created_at,
+            s.name AS store_name, s.delivery_fee
+     FROM offers ofr JOIN orders o ON o.id = ofr.order_id
+     JOIN stores s ON s.id = o.store_id
+     WHERE ofr.rider_id = $1 AND ofr.status = 'offered' AND ofr.expires_at > now()
+     ORDER BY ofr.created_at DESC`,
+    [riderId],
+  );
+  return { riderId, offers: r.rows };
+});
+
+app.get('/api/rider/active', async (req, reply) => {
+  if (!requirePersona(req, reply, ['rider'])) return;
+  const riderId = await resolveRiderId(req);
+  if (!riderId) return reply.code(404).send({ error: 'rider_not_found' });
+  const r = await pool.query(
+    `SELECT o.id FROM orders o JOIN offers ofr ON ofr.order_id = o.id
+     WHERE ofr.rider_id = $1 AND ofr.status = 'accepted'
+       AND o.status IN ('rider_assigned','picked_up','delivering')
+     ORDER BY o.created_at DESC LIMIT 1`,
+    [riderId],
+  );
+  if ((r.rowCount ?? 0) === 0) return { riderId, order: null };
+  return { riderId, order: await getOrderFull((r.rows[0] as { id: string }).id) };
+});
+
 // ---------------------------------------------------------------------------
 // Ops routes (persona: operator)
 // ---------------------------------------------------------------------------
@@ -918,7 +961,7 @@ app.get('/api/ops/live', async (req, reply) => {
 const assignSchema = z.object({ orderId: z.string().uuid(), riderId: z.string().uuid() });
 
 app.post('/api/ops/assign', async (req, reply) => {
-  if (!requirePersona(req, reply, ['operator'])) return;
+  if (!requirePersona(req, reply, ['operator', 'support'])) return;
   const parsed = assignSchema.safeParse(req.body);
   if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', issues: parsed.error.issues });
   const o = await pool.query('SELECT id, status FROM orders WHERE id = $1', [parsed.data.orderId]);
