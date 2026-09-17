@@ -40,7 +40,7 @@ function ShellHeader() {
         <Link to="/" className="text-lg font-extrabold tracking-tight">
           Kaon<span style={{ color: 'var(--accent)' }}>CDO</span>
         </Link>
-        <nav className="flex items-center gap-1 text-sm font-semibold sm:gap-2">
+        <nav className="flex max-w-[62vw] items-center gap-1 overflow-x-auto text-sm font-semibold sm:max-w-none sm:gap-2">
           <Link className="rounded-full px-3 py-1.5 hover:bg-stone-200/60" to="/buyer">
             Buyer
           </Link>

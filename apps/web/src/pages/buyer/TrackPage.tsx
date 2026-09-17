@@ -26,15 +26,6 @@ function stageIndex(status: string): number {
   return i < 0 ? 0 : i;
 }
 
-function dot(color: string, size = 18): L.DivIcon {
-  return L.divIcon({
-    className: '',
-    html: `<div style="width:${size}px;height:${size}px;border-radius:9999px;background:${color};border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.35)"></div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-  });
-}
-
 function labelPin(text: string, bg: string): L.DivIcon {
   return L.divIcon({
     className: '',
@@ -227,7 +218,16 @@ export default function TrackPage() {
 
   const storeIcon = useMemo(() => labelPin('Store', '#ea580c'), []);
   const buyerIcon = useMemo(() => labelPin('You', '#2563eb'), []);
-  const riderIcon = useMemo(() => dot('#00b14f', 20), []);
+  const riderIcon = useMemo(
+    () =>
+      L.divIcon({
+        className: '',
+        html: `<img src="/car.svg" style="width:36px;height:54px;filter:drop-shadow(0 5px 8px rgba(15,23,42,.45))" alt="rider">`,
+        iconSize: [36, 54],
+        iconAnchor: [18, 27],
+      }),
+    [],
+  );
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
