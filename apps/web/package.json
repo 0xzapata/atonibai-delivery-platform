@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "contract": "node scripts/contract-check.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "5.103.1",

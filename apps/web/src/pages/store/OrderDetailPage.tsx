@@ -4,13 +4,13 @@ import { Link, useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   OrderDetailItem,
+  OrderItemChoice,
   OrderTimelineEntry,
   RejectReason,
   StoreAction,
 } from './types';
 import {
   fetchOrderDetail,
-  fetchOrderPublic,
   orderBuyer,
   orderCreatedAt,
   orderTotal,
@@ -35,33 +35,30 @@ const REJECT_REASONS: Array<{ value: RejectReason; label: string }> = [
 ];
 
 function itemName(it: OrderDetailItem): string {
-  return it.name ?? it.title ?? it.menu_item_name ?? 'Item';
+  return it.name ?? 'Item';
 }
 
 function itemQty(it: OrderDetailItem): number {
-  return it.qty ?? it.quantity ?? it.count ?? 1;
+  return it.qty ?? 1;
 }
 
 function itemUnitPrice(it: OrderDetailItem): number {
-  return toNumber(it.price ?? it.unit_price ?? 0);
+  return toNumber(it.unit_price ?? 0);
 }
 
-function optionLabel(opt: string | Record<string, unknown>): string {
+function optionLabel(opt: string | OrderItemChoice): string {
   if (typeof opt === 'string') return opt;
-  const o = opt as Record<string, unknown>;
-  const name =
-    (o.label as string) ?? (o.name as string) ?? (o.option as string) ?? (o.choice as string) ?? '';
-  const extra = toNumber(o.price_delta ?? o.price ?? 0, 0);
-  const base = String(name || 'Option');
+  const base = String(opt.name || 'Option');
+  const extra = toNumber(opt.price_delta ?? 0, 0);
   return extra > 0 ? `${base} (+${formatPeso(extra)})` : base;
 }
 
 function timelineLabel(e: OrderTimelineEntry): string {
-  return e.label ?? e.status ?? e.event ?? 'Update';
+  return e.status ?? 'Update';
 }
 
 function timelineAt(e: OrderTimelineEntry): string | null {
-  return e.at ?? e.created_at ?? e.createdAt ?? e.timestamp ?? null;
+  return e.at ?? null;
 }
 
 export default function OrderDetailPage() {
@@ -80,29 +77,7 @@ export default function OrderDetailPage() {
     refetchOnWindowFocus: false,
   });
 
-  const publicQuery = useQuery({
-    queryKey: ['public', 'order', id],
-    queryFn: () => fetchOrderPublic(id),
-    enabled: id.length > 0,
-    retry: false,
-    refetchOnWindowFocus: false,
-    staleTime: 15_000,
-  });
-
   const detail = detailQuery.data;
-
-  const reviews = useMemo(() => {
-    const fromPublic =
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (publicQuery.data as any)?.reviews ??
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (publicQuery.data as any)?.order?.reviews ??
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (publicQuery.data as any)?.data?.reviews;
-    const fromDetail = detail?.reviews;
-    const list = fromPublic ?? fromDetail ?? [];
-    return Array.isArray(list) ? list : [];
-  }, [publicQuery.data, detail]);
 
   const mutation = useMutation({
     mutationFn: (vars: { action: StoreAction; reason?: string }) =>
@@ -126,29 +101,20 @@ export default function OrderDetailPage() {
 
   const items = useMemo(() => {
     if (!detail) return [];
-    const list =
-      detail.items ?? detail.order_items ?? detail.orderItems ?? detail.lines ?? [];
-    return Array.isArray(list) ? list : [];
+    return Array.isArray(detail.items) ? detail.items : [];
   }, [detail]);
 
   const timeline = useMemo(() => {
     if (!detail) return [];
-    const list = detail.timeline ?? detail.events ?? detail.history ?? [];
-    return Array.isArray(list) ? list : [];
+    return Array.isArray(detail.timeline) ? detail.timeline : [];
   }, [detail]);
 
   const paymentText = useMemo(() => {
     if (!detail) return '—';
     const p = detail.payment;
-    if (typeof p === 'string') return p.toUpperCase();
-    if (p && typeof p === 'object') {
-      const method = p.method ?? p.provider ?? detail.payment_method ?? detail.paymentMethod ?? '';
-      const state = p.status ?? p.state ?? detail.payment_status ?? '';
-      return [String(method || '').toUpperCase(), state ? `· ${state}` : '']
-        .join(' ')
-        .trim() || '—';
-    }
-    return String(detail.payment_method ?? detail.paymentMethod ?? '—').toUpperCase();
+    const method = (p?.method ?? detail.payment_method ?? '').toUpperCase();
+    const state = p?.status ?? detail.payment_status ?? '';
+    return [method, state ? `· ${state}` : ''].join(' ').trim() || '—';
   }, [detail]);
 
   const moneyRows = useMemo(() => {
@@ -160,7 +126,7 @@ export default function OrderDetailPage() {
       }
     };
     push('Subtotal', detail.subtotal);
-    push('Delivery fee', detail.delivery_fee ?? detail.deliveryFee);
+    push('Delivery fee', detail.delivery_fee);
     push('Service fee', detail.service_fee);
     const disc = toNumber(detail.discount ?? 0, 0);
     if (disc > 0) rows.push({ label: 'Discount', value: -disc });
@@ -205,8 +171,7 @@ export default function OrderDetailPage() {
             ) : (
               <ul className="divide-y divide-stone-100">
                 {items.map((it, i) => {
-                  const opts = it.options ?? it.choices ?? it.modifiers ?? [];
-                  const optList = Array.isArray(opts) ? opts : [];
+                  const optList = Array.isArray(it.options) ? it.options : [];
                   return (
                     <li key={String(it.id ?? i)} className="py-2">
                       <div className="flex items-baseline justify-between gap-2 text-sm">
@@ -220,12 +185,9 @@ export default function OrderDetailPage() {
                       {optList.length > 0 ? (
                         <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs font-semibold text-stone-500">
                           {optList.map((o, j) => (
-                            <li key={j}>{optionLabel(o as string | Record<string, unknown>)}</li>
+                            <li key={j}>{optionLabel(o)}</li>
                           ))}
                         </ul>
-                      ) : null}
-                      {it.notes ? (
-                        <p className="mt-1 text-xs text-stone-500">Note: {it.notes}</p>
                       ) : null}
                     </li>
                   );
@@ -246,30 +208,6 @@ export default function OrderDetailPage() {
               </div>
             </div>
 
-            {reviews.length > 0 ? (
-              <div>
-                <h2 className="text-sm font-extrabold">Reviews</h2>
-                <ul className="mt-2 space-y-2">
-                  {reviews.map((r, i) => {
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const rv = r as any;
-                    const rating = rv?.rating ?? rv?.stars ?? null;
-                    const text = rv?.comment ?? rv?.body ?? rv?.text ?? '';
-                    return (
-                      <li
-                        key={String(rv?.id ?? i)}
-                        className="rounded-2xl border border-stone-200 p-3 text-sm"
-                      >
-                        <p className="font-extrabold">
-                          {typeof rating === 'number' ? `★ ${rating}` : '★'} — review
-                        </p>
-                        {text ? <p className="mt-1 text-stone-600">{String(text)}</p> : null}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            ) : null}
           </section>
 
           <div className="space-y-3">
@@ -290,14 +228,6 @@ export default function OrderDetailPage() {
                   <div className="flex justify-between gap-2">
                     <dt className="font-semibold">Phone</dt>
                     <dd className="text-right">{detail.buyer_phone}</dd>
-                  </div>
-                ) : null}
-                {detail.buyer_address ?? detail.address ? (
-                  <div className="flex justify-between gap-2">
-                    <dt className="font-semibold">Address</dt>
-                    <dd className="max-w-44 text-right">
-                      {detail.buyer_address ?? detail.address}
-                    </dd>
                   </div>
                 ) : null}
                 <div className="flex justify-between gap-2">

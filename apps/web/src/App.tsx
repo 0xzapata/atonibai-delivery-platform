@@ -211,9 +211,6 @@ export default function App() {
           <Route path="/rider/*" element={<RiderSection />} />
           <Route path="/ops/*" element={<OpsSection />} />
           <Route path="/support/*" element={<SupportSection />} />
-          <Route path="/rider/*" element={<RiderSection />} />
-          <Route path="/ops/*" element={<OpsSection />} />
-          <Route path="/support/*" element={<SupportSection />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </main>
