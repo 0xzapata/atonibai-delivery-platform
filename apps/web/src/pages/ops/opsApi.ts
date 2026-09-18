@@ -1,8 +1,5 @@
-// Ops API helpers. Reuses src/lib/api.ts and forces `x-persona: operator`
-// (api() keeps an explicit header, so this overrides the stored persona).
+// Ops API helpers over src/lib/api.ts (forces `x-persona: operator`).
 import { api, apiGet } from '../../lib/api';
-
-// ---------- types (match live contract, defensive at runtime) ----------
 
 export interface LiveRider {
   id: string;
@@ -12,7 +9,6 @@ export interface LiveRider {
   lat: number | null;
   lng: number | null;
 }
-
 export interface LiveOrder {
   id: string;
   status: string;
@@ -20,12 +16,10 @@ export interface LiveOrder {
   store_name: string | null;
   buyer_name: string | null;
 }
-
 export interface LivePayload {
   riders: LiveRider[];
   active_orders: LiveOrder[];
 }
-
 export interface Promo {
   id?: string | number;
   code: string;
@@ -35,7 +29,6 @@ export interface Promo {
   min_order?: number | null;
   active?: boolean;
 }
-
 export interface PromoCreate {
   code: string;
   kind: 'percent' | 'flat' | 'freeship';
@@ -44,7 +37,6 @@ export interface PromoCreate {
   min_order: number;
   active: boolean;
 }
-
 export interface StorePin {
   id: string | number;
   name: string;
@@ -52,165 +44,111 @@ export interface StorePin {
   lng: number | null;
 }
 
-const OPS_HEADERS: HeadersInit = { 'x-persona': 'operator' };
+const H: HeadersInit = { 'x-persona': 'operator' };
+const get = <T>(path: string): Promise<T> => api<T>(path, { method: 'GET', headers: H });
+const post = (path: string, body: unknown): Promise<unknown> =>
+  api<unknown>(path, { method: 'POST', headers: H, body: JSON.stringify(body) });
 
-function asRecord(v: unknown): Record<string, unknown> {
-  return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
-}
-
-function toNum(v: unknown): number | null {
+const rec = (v: unknown): Record<string, unknown> =>
+  typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
+const num = (v: unknown): number | null => {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   if (typeof v === 'string') {
     const n = Number(v.replace(/[^0-9.\-]/g, ''));
     return Number.isFinite(n) ? n : null;
   }
   return null;
-}
-
-function toStr(v: unknown): string | null {
+};
+const str = (v: unknown): string | null => {
   if (typeof v === 'string' && v !== '') return v;
   if (typeof v === 'number') return String(v);
   return null;
-}
-
-// ---------- normalizers ----------
+};
+const listOf = (payload: unknown, key: string): unknown[] => {
+  const root = rec(payload);
+  if (Array.isArray(payload)) return payload;
+  const v = root[key];
+  return Array.isArray(v) ? v : [];
+};
 
 export function normalizeLive(payload: unknown): LivePayload {
-  const root = asRecord(payload);
-  const rawRiders = Array.isArray(root.riders) ? root.riders : [];
+  const root = rec(payload);
   const rawOrders = Array.isArray(root.active_orders)
     ? root.active_orders
     : Array.isArray(root.orders)
       ? root.orders
       : [];
   return {
-    riders: rawRiders.map((r, i) => {
-      const rec = asRecord(r);
+    riders: listOf(payload, 'riders').map((r, i) => {
+      const x = rec(r);
       return {
-        id: toStr(rec.id) ?? `rider-${i}`,
-        name: toStr(rec.name) ?? `Rider ${i + 1}`,
-        status: toStr(rec.status) ?? 'unknown',
-        vehicle: typeof rec.vehicle === 'string' ? rec.vehicle : null,
-        lat: toNum(rec.lat),
-        lng: toNum(rec.lng),
+        id: str(x.id) ?? `rider-${i}`,
+        name: str(x.name) ?? `Rider ${i + 1}`,
+        status: str(x.status) ?? 'unknown',
+        vehicle: typeof x.vehicle === 'string' ? x.vehicle : null,
+        lat: num(x.lat),
+        lng: num(x.lng),
       } satisfies LiveRider;
     }),
     active_orders: rawOrders.map((o, i) => {
-      const rec = asRecord(o);
+      const x = rec(o);
       return {
-        id: toStr(rec.id) ?? `order-${i}`,
-        status: toStr(rec.status) ?? 'unknown',
-        total: toNum(rec.total ?? rec.grand_total),
-        store_name: toStr(rec.store_name ?? rec.storeName ?? rec.store),
-        buyer_name: toStr(rec.buyer_name ?? rec.buyerName ?? rec.buyer),
+        id: str(x.id) ?? `order-${i}`,
+        status: str(x.status) ?? 'unknown',
+        total: num(x.total ?? x.grand_total),
+        store_name: str(x.store_name ?? x.storeName ?? x.store),
+        buyer_name: str(x.buyer_name ?? x.buyerName ?? x.buyer),
       } satisfies LiveOrder;
     }),
   };
 }
 
 export function normalizePromos(payload: unknown): Promo[] {
-  const root = asRecord(payload);
-  const raw = Array.isArray(payload)
-    ? payload
-    : Array.isArray(root.promos)
-      ? root.promos
-      : [];
-  return raw.map((p) => {
-    const rec = asRecord(p);
+  return listOf(payload, 'promos').map((p) => {
+    const x = rec(p);
     return {
       id:
-        typeof rec.id === 'string' || typeof rec.id === 'number'
-          ? rec.id
-          : (toStr(rec.code) ?? undefined),
-      code: toStr(rec.code) ?? '—',
-      kind: toStr(rec.kind) ?? '—',
-      value: toNum(rec.value) ?? 0,
-      max_discount: toNum(rec.max_discount),
-      min_order: toNum(rec.min_order),
-      active: typeof rec.active === 'boolean' ? rec.active : true,
+        typeof x.id === 'string' || typeof x.id === 'number' ? x.id : (str(x.code) ?? undefined),
+      code: str(x.code) ?? '—',
+      kind: str(x.kind) ?? '—',
+      value: num(x.value) ?? 0,
+      max_discount: num(x.max_discount),
+      min_order: num(x.min_order),
+      active: typeof x.active === 'boolean' ? x.active : true,
     } satisfies Promo;
   });
 }
 
 export function normalizeStores(payload: unknown): StorePin[] {
-  const root = asRecord(payload);
-  const raw = Array.isArray(payload)
-    ? payload
-    : Array.isArray(root.stores)
-      ? root.stores
-      : [];
-  return raw.map((s, i) => {
-    const rec = asRecord(s);
+  return listOf(payload, 'stores').map((s, i) => {
+    const x = rec(s);
     return {
-      id: (rec.id as string | number | undefined) ?? i,
-      name: toStr(rec.name) ?? `Store ${i + 1}`,
-      lat: toNum(rec.lat),
-      lng: toNum(rec.lng),
+      id: (x.id as string | number | undefined) ?? i,
+      name: str(x.name) ?? `Store ${i + 1}`,
+      lat: num(x.lat),
+      lng: num(x.lng),
     } satisfies StorePin;
   });
 }
 
-// ---------- query fns (exact contract paths) ----------
+export const fetchLive = (): Promise<LivePayload> => get<unknown>('/api/ops/live').then(normalizeLive);
+export const fetchStores = (): Promise<StorePin[]> => apiGet<unknown>('/api/stores').then(normalizeStores);
+export const fetchPromos = (): Promise<Promo[]> => get<unknown>('/api/ops/promos').then(normalizePromos);
+export const assignOrder = (orderId: string, riderId: string): Promise<unknown> =>
+  post('/api/ops/assign', { orderId, riderId });
+export const broadcast = (message: string): Promise<unknown> => post('/api/ops/broadcast', { message });
+export const createPromo = (input: PromoCreate): Promise<unknown> => post('/api/ops/promos', input);
 
-export function fetchLive(): Promise<LivePayload> {
-  return api<unknown>('/api/ops/live', { method: 'GET', headers: OPS_HEADERS }).then(
-    normalizeLive,
-  );
-}
+const RIDER_COLORS: Record<string, string> = {
+  online: '#00b14f',
+  available: '#00b14f',
+  idle: '#00b14f',
+  busy: '#2563eb',
+  delivering: '#2563eb',
+  on_delivery: '#2563eb',
+  on_trip: '#2563eb',
+  offline: '#78716c',
+};
 
-/** Public store directory — used to pin active-order stores on the map. */
-export function fetchStores(): Promise<StorePin[]> {
-  return apiGet<unknown>('/api/stores').then(normalizeStores);
-}
-
-export function fetchPromos(): Promise<Promo[]> {
-  return api<unknown>('/api/ops/promos', {
-    method: 'GET',
-    headers: OPS_HEADERS,
-  }).then(normalizePromos);
-}
-
-export function assignOrder(orderId: string, riderId: string): Promise<unknown> {
-  return api<unknown>('/api/ops/assign', {
-    method: 'POST',
-    headers: OPS_HEADERS,
-    body: JSON.stringify({ orderId, riderId }),
-  });
-}
-
-export function broadcast(message: string): Promise<unknown> {
-  return api<unknown>('/api/ops/broadcast', {
-    method: 'POST',
-    headers: OPS_HEADERS,
-    body: JSON.stringify({ message }),
-  });
-}
-
-export function createPromo(input: PromoCreate): Promise<unknown> {
-  return api<unknown>('/api/ops/promos', {
-    method: 'POST',
-    headers: OPS_HEADERS,
-    body: JSON.stringify(input),
-  });
-}
-
-// ---------- presentation helpers ----------
-
-/** Marker color for a rider status (DB values: online | busy). */
-export function riderColor(status: string): string {
-  switch (status.trim().toLowerCase()) {
-    case 'online':
-    case 'available':
-    case 'idle':
-      return '#00b14f';
-    case 'busy':
-    case 'delivering':
-    case 'on_delivery':
-    case 'on_trip':
-      return '#2563eb';
-    case 'offline':
-      return '#78716c';
-    default:
-      return '#f59e0b';
-  }
-}
+export const riderColor = (status: string): string =>
+  RIDER_COLORS[status.trim().toLowerCase()] ?? '#f59e0b';

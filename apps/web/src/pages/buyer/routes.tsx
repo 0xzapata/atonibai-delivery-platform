@@ -11,27 +11,16 @@ import { Toaster } from './toast';
 
 function BuyerLayout() {
   const [persona, setPersona] = usePersona();
-
-  useEffect(() => {
-    if (persona !== 'buyer') setPersona('buyer');
-  }, [persona, setPersona]);
-
-  return (
-    <div>
-      <Outlet />
-      <Toaster />
-    </div>
-  );
+  useEffect(() => { if (persona !== 'buyer') setPersona('buyer'); }, [persona, setPersona]);
+  return (<div><Outlet /><Toaster /></div>);
 }
 
-export const buyerRoutes: RouteObject[] = [
-  {
-    element: <BuyerLayout />,
-    children: [
-      { index: true, element: <BrowsePage /> },
-      { path: 's/:id', element: <StorePage /> },
-      { path: 'checkout', element: <CheckoutPage /> },
-      { path: 'track/:id', element: <TrackPage /> },
-    ],
-  },
-];
+export const buyerRoutes: RouteObject[] = [{
+  element: <BuyerLayout />,
+  children: [
+    { index: true, element: <BrowsePage /> },
+    { path: 's/:id', element: <StorePage /> },
+    { path: 'checkout', element: <CheckoutPage /> },
+    { path: 'track/:id', element: <TrackPage /> },
+  ],
+}];

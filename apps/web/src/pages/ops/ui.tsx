@@ -1,21 +1,10 @@
 // Shared ops chrome: shell (persona guard), local toasts, badges, formatting.
-// Light theme + `.card`, matching the store-owner look.
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useState,
-  type ReactNode,
-} from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { usePersona } from '../../lib/persona';
 
-// ---------- formatting ----------
-
 export function formatPeso(v: unknown): string {
-  const n =
-    typeof v === 'number' ? v : Number(String(v ?? 0).replace(/[^0-9.\-]/g, ''));
+  const n = typeof v === 'number' ? v : Number(String(v ?? 0).replace(/[^0-9.\-]/g, ''));
   const safe = Number.isFinite(n) ? n : 0;
   try {
     return new Intl.NumberFormat('en-PH', {
@@ -33,8 +22,6 @@ export function shortId(id: string | number): string {
   return s.length > 8 ? `${s.slice(0, 8)}…` : s;
 }
 
-// ---------- status pill ----------
-
 const PILL_STYLES: Record<string, string> = {
   placed: 'bg-amber-100 text-amber-800',
   store_accepted: 'bg-sky-100 text-sky-800',
@@ -48,19 +35,15 @@ const PILL_STYLES: Record<string, string> = {
 };
 
 export function StatusPill({ status }: { status: string }) {
-  const key = status.trim().toLowerCase();
-  const cls = PILL_STYLES[key] ?? 'bg-stone-200 text-stone-700';
   return (
     <span
-      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${cls}`}
+      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${PILL_STYLES[status.trim().toLowerCase()] ?? 'bg-stone-200 text-stone-700'}`}
       title={status}
     >
       {status.replaceAll('_', ' ')}
     </span>
   );
 }
-
-// ---------- toast (tiny, local) ----------
 
 interface ToastItem {
   id: number;
@@ -78,36 +61,13 @@ export function useToast() {
 
 let toastSeq = 1;
 
-function ToastViewport({ toasts }: { toasts: ToastItem[] }) {
-  return (
-    <div className="pointer-events-none fixed right-4 bottom-4 z-[1000] flex w-72 flex-col gap-2">
-      {toasts.map((t) => (
-        <div
-          key={t.id}
-          role="status"
-          className={`card pointer-events-auto px-3 py-2 text-sm font-semibold ${
-            t.kind === 'err' ? 'border-red-200 text-red-700' : 'text-stone-800'
-          }`}
-        >
-          {t.message}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ---------- shell ----------
-
 export function OpsShell({ children }: { children: ReactNode }) {
   const [, setPersona] = usePersona();
   const [toasts, setToasts] = useState<ToastItem[]>([]);
-
   const push = useCallback((message: string, kind: 'ok' | 'err' = 'ok') => {
     const id = toastSeq++;
     setToasts((prev) => [...prev.slice(-3), { id, message, kind }]);
-    window.setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 3200);
+    window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3200);
   }, []);
 
   useEffect(() => {
@@ -140,7 +100,19 @@ export function OpsShell({ children }: { children: ReactNode }) {
           </span>
         </div>
         {children}
-        <ToastViewport toasts={toasts} />
+        <div className="pointer-events-none fixed right-4 bottom-4 z-[1000] flex w-72 flex-col gap-2">
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              role="status"
+              className={`card pointer-events-auto px-3 py-2 text-sm font-semibold ${
+                t.kind === 'err' ? 'border-red-200 text-red-700' : 'text-stone-800'
+              }`}
+            >
+              {t.message}
+            </div>
+          ))}
+        </div>
       </div>
     </ToastCtx.Provider>
   );

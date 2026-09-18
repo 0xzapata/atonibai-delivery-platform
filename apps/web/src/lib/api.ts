@@ -63,3 +63,27 @@ export function countStores(payload: StoresPayload | undefined): number | null {
   if (Array.isArray(payload.stores)) return payload.stores.length;
   return null;
 }
+
+/** Shared untyped-JSON helpers (API payloads are loose; every area normalizes them). */
+export function asRecord(v: unknown): Record<string, unknown> {
+  return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
+}
+export function toStr(v: unknown): string | null {
+  if (typeof v === 'string' && v !== '') return v;
+  if (typeof v === 'number') return String(v);
+  return null;
+}
+export function pickList<T>(payload: unknown, keys: string[]): T[] {
+  if (Array.isArray(payload)) return payload as T[];
+  const r = asRecord(payload);
+  for (const k of keys) if (Array.isArray(r[k])) return r[k] as T[];
+  return [];
+}
+export function firstObj(payload: unknown, keys: string[]): Record<string, unknown> | null {
+  const r = asRecord(payload);
+  for (const k of keys) {
+    const v = r[k];
+    if (v && typeof v === 'object') return v as Record<string, unknown>;
+  }
+  return null;
+}

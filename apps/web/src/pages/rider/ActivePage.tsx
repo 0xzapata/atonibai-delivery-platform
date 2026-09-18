@@ -29,22 +29,24 @@ const ESRI_ATTR =
   'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics | &copy; OpenStreetMap contributors';
 const CAR_URL = `${import.meta.env.BASE_URL}car.svg`;
 
-function storePin(): L.DivIcon {
+const PIN_STYLES: Record<string, string> = { Store: '#ea580c', Buyer: '#2563eb' };
+
+function pinIcon(label: string): L.DivIcon {
+  const bg = PIN_STYLES[label] ?? '#57534e';
   return L.divIcon({
     className: '',
-    html: `<div style="display:flex;align-items:center;gap:4px;background:#ea580c;color:#fff;font:800 11px system-ui;padding:4px 8px;border-radius:9999px;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.35);white-space:nowrap">Store</div>`,
+    html: `<div style="display:flex;align-items:center;gap:4px;background:${bg};color:#fff;font:800 11px system-ui;padding:4px 8px;border-radius:9999px;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.35);white-space:nowrap">${label}</div>`,
     iconSize: [0, 0],
     iconAnchor: [0, -8],
   });
 }
 
+function storePin(): L.DivIcon {
+  return pinIcon('Store');
+}
+
 function buyerPin(): L.DivIcon {
-  return L.divIcon({
-    className: '',
-    html: `<div style="display:flex;align-items:center;gap:4px;background:#2563eb;color:#fff;font:800 11px system-ui;padding:4px 8px;border-radius:9999px;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.35);white-space:nowrap">Buyer</div>`,
-    iconSize: [0, 0],
-    iconAnchor: [0, -8],
-  });
+  return pinIcon('Buyer');
 }
 
 function carIcon(heading: number): L.DivIcon {
@@ -90,6 +92,243 @@ function EarningsCard({ entries }: { entries: DeliveredEntry[] }) {
 
 function statusLabel(status: string): string {
   return status.trim().toLowerCase().replace(/_/g, ' ');
+}
+
+// Status → which action sections show. Replaces scattered if-if-if status checks.
+const STATUS_ACTIONS: Record<string, { pickup: boolean; sim: boolean; deliver: boolean }> = {
+  rider_assigned: { pickup: true, sim: false, deliver: false },
+  picked_up: { pickup: false, sim: true, deliver: true },
+  delivering: { pickup: true, sim: true, deliver: true },
+};
+
+function actionsFor(status: string): { pickup: boolean; sim: boolean; deliver: boolean } {
+  return STATUS_ACTIONS[status] ?? { pickup: false, sim: false, deliver: false };
+}
+
+function LoadingCard({ text }: { text: string }) {
+  return <div className="card animate-pulse p-6 text-sm text-stone-500">{text}</div>;
+}
+
+function ActiveLoadError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="card p-6 text-center">
+      <h2 className="text-base font-extrabold">Couldn&apos;t load the active order</h2>
+      <p className="mt-1 text-sm text-stone-500">
+        Expected <code>GET /api/rider/active?riderEmail=</code>. It polls every 5s once reachable.
+      </p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-4 rounded-full px-4 py-2 text-sm font-bold text-white"
+        style={{ backgroundColor: 'var(--accent)' }}
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
+function NoActiveCard() {
+  return (
+    <div className="card p-6 text-center">
+      <h2 className="text-base font-extrabold">No active delivery</h2>
+      <p className="mt-1 text-sm text-stone-500">
+        Accept an offer from the queue and it will show up here with the pickup map.
+      </p>
+      <Link
+        to=".."
+        className="mt-4 inline-block rounded-full px-4 py-2 text-sm font-bold text-white"
+        style={{ backgroundColor: 'var(--accent)' }}
+      >
+        ← Back to offers
+      </Link>
+    </div>
+  );
+}
+
+function OrderCard({
+  order,
+  effectiveStatus,
+  simRunning,
+}: {
+  order: ActiveOrder;
+  effectiveStatus: string;
+  simRunning: boolean;
+}) {
+  return (
+    <>
+      <div className="card flex flex-wrap items-center gap-2 p-4">
+        <span
+          className="rounded-full px-3 py-1.5 text-xs font-extrabold text-white uppercase"
+          style={{ backgroundColor: 'var(--accent)' }}
+        >
+          {statusLabel(effectiveStatus)}
+        </span>
+        {simRunning && (
+          <span className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-700">
+            ● Sim run · pings 1/sec
+          </span>
+        )}
+        {order.eta_min !== null && (
+          <span className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-bold">
+            ETA ~{order.eta_min} min
+          </span>
+        )}
+        {order.total !== null && (
+          <span className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-bold">
+            Total {peso(order.total)}
+          </span>
+        )}
+        <span className="ml-auto text-[11px] font-semibold text-stone-400">live · 5s poll</span>
+      </div>
+      <div className="card space-y-1 p-4">
+        <p className="text-xs font-bold tracking-widest text-stone-400 uppercase">
+          Order #{shortId(order.id)}
+        </p>
+        <p className="text-base font-extrabold">{order.store?.name ?? 'Store'}</p>
+        {order.payment_method && (
+          <p className="text-xs font-semibold text-stone-500 uppercase">
+            Pay via {order.payment_method}
+          </p>
+        )}
+        {order.items.length > 0 && (
+          <ul className="mt-2 space-y-1 border-t border-stone-100 pt-2 text-sm text-stone-600">
+            {order.items.map((it, i) => (
+              <li key={i} className="flex justify-between gap-2">
+                <span>
+                  {it.qty}× {it.name}
+                </span>
+                {it.price !== null && <span className="font-bold">{peso(it.price)}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
+  );
+}
+
+interface MapProps {
+  center: [number, number];
+  line: Array<[number, number]>;
+  storeCoord: { lat: number; lng: number } | null;
+  buyerCoord: { lat: number; lng: number } | null;
+  riderMarker: { pos: [number, number]; heading: number } | null;
+  storeIcon: L.DivIcon;
+  buyerIcon: L.DivIcon;
+  riderIcon: L.DivIcon;
+}
+
+function DeliveryMap({
+  center,
+  line,
+  storeCoord,
+  buyerCoord,
+  riderMarker,
+  storeIcon,
+  buyerIcon,
+  riderIcon,
+}: MapProps) {
+  return (
+    <div className="card overflow-hidden">
+      <div className="h-64 sm:h-80">
+        <MapContainer
+          center={center}
+          zoom={14}
+          scrollWheelZoom={false}
+          style={{ height: '100%', width: '100%' }}
+        >
+          <TileLayer url={ESRI_TILES} attribution={ESRI_ATTR} />
+          <FitBounds points={line} />
+          {storeCoord && <Marker position={[storeCoord.lat, storeCoord.lng]} icon={storeIcon} />}
+          {buyerCoord && <Marker position={[buyerCoord.lat, buyerCoord.lng]} icon={buyerIcon} />}
+          {line.length > 1 && (
+            <Polyline positions={line} pathOptions={{ color: '#00b14f', weight: 4 }} />
+          )}
+          {riderMarker && <Marker position={riderMarker.pos} icon={riderIcon} />}
+        </MapContainer>
+      </div>
+      <p className="border-t border-stone-100 px-4 py-2 text-[11px] text-stone-400">
+        Esri WorldStreetMap · route via OSRM (straight-line fallback) · car.svg rider marker
+      </p>
+    </div>
+  );
+}
+
+function PickupCard({
+  pin,
+  setPin,
+  pinBusy,
+  onSubmit,
+}: {
+  pin: string;
+  setPin: (v: string) => void;
+  pinBusy: boolean;
+  onSubmit: () => void;
+}) {
+  return (
+    <div className="card space-y-3 p-4">
+      <h2 className="text-sm font-extrabold">Confirm pickup</h2>
+      <p className="text-xs text-stone-500">
+        Ask the buyer for the handover PIN, enter it, then mark the order picked up.
+      </p>
+      <div className="flex gap-2">
+        <input
+          value={pin}
+          onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 8))}
+          inputMode="numeric"
+          placeholder="Pickup PIN"
+          className="min-w-0 flex-1 rounded-2xl border border-stone-200 bg-stone-50 px-4 py-2.5 text-center text-lg font-extrabold tracking-[0.3em] outline-none focus:border-emerald-500"
+        />
+        <button
+          type="button"
+          onClick={onSubmit}
+          disabled={pinBusy}
+          className="rounded-full px-5 py-2.5 text-sm font-extrabold text-white disabled:opacity-60"
+          style={{ backgroundColor: 'var(--accent)' }}
+        >
+          {pinBusy ? 'Checking…' : 'Picked up'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SimCard({
+  simRunning,
+  onStart,
+  onStop,
+}: {
+  simRunning: boolean;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  return (
+    <div className="card space-y-2 p-4">
+      <h2 className="text-sm font-extrabold">Run to buyer</h2>
+      <p className="text-xs text-stone-500">
+        Animates the car along the route at ~8x and posts <code>/api/tracking</code> pings ~1/sec.
+      </p>
+      {simRunning ? (
+        <button
+          type="button"
+          onClick={onStop}
+          className="w-full rounded-full bg-stone-900 px-4 py-2.5 text-sm font-extrabold text-white"
+        >
+          Stop simulation
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onStart}
+          className="w-full rounded-full px-4 py-2.5 text-sm font-extrabold text-white"
+          style={{ backgroundColor: 'var(--accent)' }}
+        >
+          Simulate run
+        </button>
+      )}
+    </div>
+  );
 }
 
 export default function ActivePage() {
@@ -314,9 +553,10 @@ export default function ActivePage() {
   }
 
   const effectiveStatus = simDelivering && status === 'picked_up' ? 'delivering' : status;
-  const canPickup = status === 'rider_assigned' || status === 'delivering';
-  const canSim = (status === 'picked_up' || status === 'delivering') && line.length > 1;
-  const canDeliver = status === 'picked_up' || status === 'delivering';
+  const actions = actionsFor(status);
+  const canPickup = actions.pickup;
+  const canSim = actions.sim && line.length > 1;
+  const canDeliver = actions.deliver;
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
@@ -330,156 +570,33 @@ export default function ActivePage() {
         <h1 className="text-xl font-extrabold">Active delivery</h1>
       </div>
 
-      {activeQuery.isPending && (
-        <div className="card animate-pulse p-6 text-sm text-stone-500">Loading active order…</div>
-      )}
+      {activeQuery.isPending && <LoadingCard text="Loading active order…" />}
 
-      {activeQuery.isError && (
-        <div className="card p-6 text-center">
-          <h2 className="text-base font-extrabold">Couldn&apos;t load the active order</h2>
-          <p className="mt-1 text-sm text-stone-500">
-            Expected <code>GET /api/rider/active?riderEmail=</code>. It polls every 5s once reachable.
-          </p>
-          <button
-            type="button"
-            onClick={() => activeQuery.refetch()}
-            className="mt-4 rounded-full px-4 py-2 text-sm font-bold text-white"
-            style={{ backgroundColor: 'var(--accent)' }}
-          >
-            Retry
-          </button>
-        </div>
-      )}
+      {activeQuery.isError && <ActiveLoadError onRetry={() => activeQuery.refetch()} />}
 
       {order && (
         <>
-          <div className="card flex flex-wrap items-center gap-2 p-4">
-            <span
-              className="rounded-full px-3 py-1.5 text-xs font-extrabold text-white uppercase"
-              style={{ backgroundColor: 'var(--accent)' }}
-            >
-              {statusLabel(effectiveStatus)}
-            </span>
-            {simRunning && (
-              <span className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-700">
-                ● Sim run · pings 1/sec
-              </span>
-            )}
-            {order.eta_min !== null && (
-              <span className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-bold">
-                ETA ~{order.eta_min} min
-              </span>
-            )}
-            {order.total !== null && (
-              <span className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-bold">
-                Total {peso(order.total)}
-              </span>
-            )}
-            <span className="ml-auto text-[11px] font-semibold text-stone-400">live · 5s poll</span>
-          </div>
-
-          <div className="card space-y-1 p-4">
-            <p className="text-xs font-bold tracking-widest text-stone-400 uppercase">
-              Order #{shortId(order.id)}
-            </p>
-            <p className="text-base font-extrabold">{order.store?.name ?? 'Store'}</p>
-            {order.payment_method && (
-              <p className="text-xs font-semibold text-stone-500 uppercase">
-                Pay via {order.payment_method}
-              </p>
-            )}
-            {order.items.length > 0 && (
-              <ul className="mt-2 space-y-1 border-t border-stone-100 pt-2 text-sm text-stone-600">
-                {order.items.map((it, i) => (
-                  <li key={i} className="flex justify-between gap-2">
-                    <span>
-                      {it.qty}× {it.name}
-                    </span>
-                    {it.price !== null && <span className="font-bold">{peso(it.price)}</span>}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div className="card overflow-hidden">
-            <div className="h-64 sm:h-80">
-              <MapContainer
-                center={center}
-                zoom={14}
-                scrollWheelZoom={false}
-                style={{ height: '100%', width: '100%' }}
-              >
-                <TileLayer url={ESRI_TILES} attribution={ESRI_ATTR} />
-                <FitBounds points={line} />
-                {storeCoord && <Marker position={[storeCoord.lat, storeCoord.lng]} icon={storeIcon} />}
-                {buyerCoord && <Marker position={[buyerCoord.lat, buyerCoord.lng]} icon={buyerIcon} />}
-                {line.length > 1 && (
-                  <Polyline positions={line} pathOptions={{ color: '#00b14f', weight: 4 }} />
-                )}
-                {riderMarker && <Marker position={riderMarker.pos} icon={riderIcon} />}
-              </MapContainer>
-            </div>
-            <p className="border-t border-stone-100 px-4 py-2 text-[11px] text-stone-400">
-              Esri WorldStreetMap · route via OSRM (straight-line fallback) · car.svg rider marker
-            </p>
-          </div>
-
+          <OrderCard order={order} effectiveStatus={effectiveStatus} simRunning={simRunning} />
+          <DeliveryMap
+            center={center}
+            line={line}
+            storeCoord={storeCoord}
+            buyerCoord={buyerCoord}
+            riderMarker={riderMarker}
+            storeIcon={storeIcon}
+            buyerIcon={buyerIcon}
+            riderIcon={riderIcon}
+          />
           {canPickup && (
-            <div className="card space-y-3 p-4">
-              <h2 className="text-sm font-extrabold">Confirm pickup</h2>
-              <p className="text-xs text-stone-500">
-                Ask the buyer for the handover PIN, enter it, then mark the order picked up.
-              </p>
-              <div className="flex gap-2">
-                <input
-                  value={pin}
-                  onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 8))}
-                  inputMode="numeric"
-                  placeholder="Pickup PIN"
-                  className="min-w-0 flex-1 rounded-2xl border border-stone-200 bg-stone-50 px-4 py-2.5 text-center text-lg font-extrabold tracking-[0.3em] outline-none focus:border-emerald-500"
-                />
-                <button
-                  type="button"
-                  onClick={submitPickup}
-                  disabled={pinBusy}
-                  className="rounded-full px-5 py-2.5 text-sm font-extrabold text-white disabled:opacity-60"
-                  style={{ backgroundColor: 'var(--accent)' }}
-                >
-                  {pinBusy ? 'Checking…' : 'Picked up'}
-                </button>
-              </div>
-            </div>
+            <PickupCard pin={pin} setPin={setPin} pinBusy={pinBusy} onSubmit={submitPickup} />
           )}
-
           {canSim && (
-            <div className="card space-y-2 p-4">
-              <h2 className="text-sm font-extrabold">Run to buyer</h2>
-              <p className="text-xs text-stone-500">
-                Animates the car along the route at ~8x and posts{' '}
-                <code>/api/tracking</code> pings ~1/sec.
-              </p>
-              {simRunning ? (
-                <button
-                  type="button"
-                  onClick={() => stopSim('Simulation stopped')}
-                  className="w-full rounded-full bg-stone-900 px-4 py-2.5 text-sm font-extrabold text-white"
-                >
-                  Stop simulation
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={startSim}
-                  className="w-full rounded-full px-4 py-2.5 text-sm font-extrabold text-white"
-                  style={{ backgroundColor: 'var(--accent)' }}
-                >
-                  Simulate run
-                </button>
-              )}
-            </div>
+            <SimCard
+              simRunning={simRunning}
+              onStart={startSim}
+              onStop={() => stopSim('Simulation stopped')}
+            />
           )}
-
           {canDeliver && (
             <button
               type="button"
@@ -493,21 +610,7 @@ export default function ActivePage() {
         </>
       )}
 
-      {!activeQuery.isPending && !order && !activeQuery.isError && (
-        <div className="card p-6 text-center">
-          <h2 className="text-base font-extrabold">No active delivery</h2>
-          <p className="mt-1 text-sm text-stone-500">
-            Accept an offer from the queue and it will show up here with the pickup map.
-          </p>
-          <Link
-            to=".."
-            className="mt-4 inline-block rounded-full px-4 py-2 text-sm font-bold text-white"
-            style={{ backgroundColor: 'var(--accent)' }}
-          >
-            ← Back to offers
-          </Link>
-        </div>
-      )}
+      {!activeQuery.isPending && !order && !activeQuery.isError && <NoActiveCard />}
 
       <EarningsCard entries={entries} />
     </div>
